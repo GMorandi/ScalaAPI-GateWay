@@ -125,10 +125,16 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
     // --- Step 6: Forward to upstream ---
     auto& target = dispatch_result.upstream;
 
+    protocol::Format upstream_format;
+    if (target.platform == "anthropic" || target.platform == "claude")
+        upstream_format = protocol::Format::Anthropic;
+    else if (target.platform == "gemini" || target.platform == "google")
+        upstream_format = protocol::Format::Gemini;
+    else
+        upstream_format = protocol::Format::OpenAIChatCompletions;
+
     std::string upstream_body = protocol::Converter::convert_request(
-        req.body, inbound_format,
-        protocol::Format::Anthropic,
-        target.mapped_model);
+        req.body, inbound_format, upstream_format, target.mapped_model);
 
     auto forward_result = forwarder_->forward(
         nullptr, nullptr, target, upstream_body, is_stream);
