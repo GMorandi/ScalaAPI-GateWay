@@ -1,5 +1,6 @@
 #include "server/router.h"
 #include "server/gateway_handler.h"
+#include "cache/garnet_client.h"
 #include "auth/speculative_cache.h"
 #include "usage/usage_collector.h"
 #include "platform/logging.h"
@@ -10,6 +11,7 @@
 namespace gateway::server {
 
 struct Router::Impl {
+    cache::GarnetClient* garnet;
     auth::SpeculativeCache* auth_cache;
     usage::UsageCollector* collector;
     std::unique_ptr<GatewayHandler> gateway;
@@ -23,6 +25,7 @@ std::unique_ptr<Router> Router::create(
 
     auto r = std::make_unique<Router>();
     r->impl_ = std::make_unique<Impl>();
+    r->impl_->garnet = &garnet;
     r->impl_->auth_cache = &auth_cache;
     r->impl_->collector = &collector;
     r->impl_->gateway = std::make_unique<GatewayHandler>(
@@ -47,9 +50,20 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
         return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::Responses);
     }
 
+    if (path == "/v1/embeddings" || path == "/embeddings") {
+        return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::Embeddings);
+    }
+
+    if (path == "/v1/images/generations" || path == "/images/generations") {
+        return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::Images);
+    }
+
+    if (path == "/v1/messages/count_tokens" || path == "/messages/count_tokens") {
+        return handle_count_tokens(req, resp);
+    }
+
     if (path == "/v1/models" || path == "/models") {
-        resp.status_code = 200;
-        return 0;
+        return handle_models(req, resp);
     }
 
     if (path.starts_with("/v1beta/")) {
@@ -96,6 +110,27 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
     }
 
     resp.status_code = 404;
+    return 0;
+}
+
+int Router::handle_models(const HttpRequest& req, HttpResponse& resp) {
+    auto cached = impl_->garnet->get("models:list");
+    if (cached.found && !cached.value.empty()) {
+        resp.status_code = 200;
+        resp.body = cached.value;
+        return 0;
+    }
+
+    resp.status_code = 200;
+    resp.body = R"({"object":"list","data":[]})";
+    return 0;
+}
+
+int Router::handle_count_tokens(const HttpRequest& req, HttpResponse& resp) {
+    int estimated = static_cast<int>(req.body.size() / 4);
+    if (estimated < 1) estimated = 1;
+    resp.status_code = 200;
+    resp.body = std::format(R"({{"input_tokens":{}}})", estimated);
     return 0;
 }
 

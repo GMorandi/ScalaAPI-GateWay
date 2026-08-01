@@ -43,6 +43,9 @@ public:
     int handle_request(const HttpRequest& req, HttpResponse& resp);
 
 private:
+    int handle_models(const HttpRequest& req, HttpResponse& resp);
+    int handle_count_tokens(const HttpRequest& req, HttpResponse& resp);
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
