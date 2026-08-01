@@ -41,16 +41,22 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
 
     auto key_hash = auth::ApiKeyAuth::hash_key(raw_key);
 
-    // --- Step 2: Garnet hot-path auth lookup (sub-μs) ---
-    std::string garnet_key = std::format("auth:{}", key_hash);
-    auto garnet_resp = garnet_.get(garnet_key);
-
+    // --- Step 2: Two-tier auth cache lookup ---
     int64_t cached_version = 0;
-    if (garnet_resp.found) {
+
+    auto cache_hit = auth_cache_.lookup(key_hash);
+    if (cache_hit) {
+        cached_version = cache_hit->version;
         metrics.garnet_hits.fetch_add(1, std::memory_order_relaxed);
-        cached_version = 1;
     } else {
-        metrics.garnet_misses.fetch_add(1, std::memory_order_relaxed);
+        std::string garnet_key = std::format("auth:{}", key_hash);
+        auto garnet_resp = garnet_.get(garnet_key);
+        if (garnet_resp.found) {
+            metrics.garnet_hits.fetch_add(1, std::memory_order_relaxed);
+            cached_version = 1;
+        } else {
+            metrics.garnet_misses.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     // --- Step 3: Parse request body ---
@@ -80,7 +86,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
     // --- Step 4: Compute session hash for sticky scheduling ---
     auto session_hash = compute_session_hash(req.body, parsed.model);
 
-    // --- Step 5: Cap'n Proto Dispatch (auth + schedule + slot acquire) ---
+    // --- Step 5+6+7: Dispatch, forward, and failover loop ---
     dispatch::DispatchRequest dispatch_req{
         .api_key_hash = key_hash,
         .requested_model = parsed.model,
@@ -94,57 +100,73 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
     };
 
     forwarder::FailoverController failover;
+    forwarder::ForwardResult forward_result;
     dispatch::DispatchResult dispatch_result;
 
     while (true) {
-        dispatch_result = dispatch_.dispatch(dispatch_req);
-        metrics.dispatch_calls.fetch_add(1, std::memory_order_relaxed);
+        // Dispatch
+        while (true) {
+            dispatch_result = dispatch_.dispatch(dispatch_req);
+            metrics.dispatch_calls.fetch_add(1, std::memory_order_relaxed);
 
-        if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Ok) {
-            break;
+            if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Ok ||
+                dispatch_result.outcome == dispatch::DispatchResult::Outcome::Reauth) {
+                if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Reauth) {
+                    auth_cache_.evict(key_hash);
+                } else if (dispatch_result.auth_version > 0) {
+                    auth::AuthSnapshot snap;
+                    snap.version = dispatch_result.auth_version;
+                    snap.user_id = dispatch_result.upstream.user_id;
+                    snap.group_id = dispatch_result.upstream.group_id;
+                    auth_cache_.insert(key_hash, std::move(snap));
+                }
+                break;
+            }
+            if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Rejected) {
+                resp.status_code = 429;
+                metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+                return 0;
+            }
+            if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Wait) {
+                photon::thread_usleep(
+                    static_cast<uint64_t>(dispatch_result.wait_timeout_ms) * 1000);
+                continue;
+            }
         }
 
-        if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Reauth) {
-            break;
+        // Forward
+        auto& target = dispatch_result.upstream;
+
+        protocol::Format upstream_format;
+        if (target.platform == "anthropic" || target.platform == "claude")
+            upstream_format = protocol::Format::Anthropic;
+        else if (target.platform == "gemini" || target.platform == "google")
+            upstream_format = protocol::Format::Gemini;
+        else
+            upstream_format = protocol::Format::OpenAIChatCompletions;
+
+        std::string upstream_body = protocol::Converter::convert_request(
+            req.body, inbound_format, upstream_format, target.mapped_model);
+
+        forwarder::ProtocolMode stream_mode = forwarder::ProtocolMode::Passthrough;
+        if (is_stream && inbound_format != upstream_format) {
+            if (inbound_format == protocol::Format::Gemini ||
+                upstream_format == protocol::Format::Gemini) {
+                stream_mode = forwarder::ProtocolMode::GeminiCompat;
+            } else if (upstream_format == protocol::Format::Anthropic) {
+                stream_mode = forwarder::ProtocolMode::AnthropicToOpenAI;
+            } else if (inbound_format == protocol::Format::Anthropic) {
+                stream_mode = forwarder::ProtocolMode::OpenAIToAnthropic;
+            }
         }
 
-        if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Rejected) {
-            resp.status_code = 429;
-            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
-            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
-            return 0;
-        }
+        forward_result = forwarder_->forward(
+            target, upstream_body, is_stream, resp.stream_write, stream_mode);
 
-        if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Wait) {
-            photon::thread_usleep(
-                static_cast<uint64_t>(dispatch_result.wait_timeout_ms) * 1000);
-            continue;
-        }
-    }
-
-    // --- Step 6: Forward to upstream ---
-    auto& target = dispatch_result.upstream;
-
-    protocol::Format upstream_format;
-    if (target.platform == "anthropic" || target.platform == "claude")
-        upstream_format = protocol::Format::Anthropic;
-    else if (target.platform == "gemini" || target.platform == "google")
-        upstream_format = protocol::Format::Gemini;
-    else
-        upstream_format = protocol::Format::OpenAIChatCompletions;
-
-    std::string upstream_body = protocol::Converter::convert_request(
-        req.body, inbound_format, upstream_format, target.mapped_model);
-
-    auto forward_result = forwarder_->forward(
-        target, upstream_body, is_stream, resp.stream_write);
-
-    // --- Step 7: Handle upstream errors with failover ---
-    if (forward_result.status_code >= 400 && forward_result.status_code != 400) {
-        auto action = failover.handle_error(target.account_id, forward_result.status_code);
-
-        if (action == forwarder::FailoverController::Action::SwitchAccount ||
-            action == forwarder::FailoverController::Action::Continue) {
+        // Check if we need failover
+        if (forward_result.status_code >= 400 && forward_result.status_code != 400) {
+            auto action = failover.handle_error(target.account_id, forward_result.status_code);
 
             dispatch::ErrorReportData err{
                 .account_id = target.account_id,
@@ -155,24 +177,35 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             dispatch_.report_upstream_error(err);
             metrics.upstream_errors.fetch_add(1, std::memory_order_relaxed);
 
-            dispatch_req.excluded_accounts.assign(
-                failover.failed_accounts().begin(),
-                failover.failed_accounts().end());
-            metrics.failovers.fetch_add(1, std::memory_order_relaxed);
+            if (action == forwarder::FailoverController::Action::SwitchAccount ||
+                action == forwarder::FailoverController::Action::Continue) {
+                dispatch_req.excluded_accounts.assign(
+                    failover.failed_accounts().begin(),
+                    failover.failed_accounts().end());
+                metrics.failovers.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
         }
+
+        break;
+    }
+
+    if (!is_stream && !forward_result.body.empty()) {
+        resp.body = std::move(forward_result.body);
     }
 
     // --- Step 8: Report usage (fire-and-forget) ---
     auto elapsed = std::chrono::steady_clock::now() - start;
+    auto& upstream = dispatch_result.upstream;
     usage::UsageEvent event{
         .lease_token = dispatch_result.lease_token,
         .request_id = request_id,
         .api_key_id = 0,
-        .user_id = target.user_id,
-        .account_id = target.account_id,
-        .group_id = target.group_id,
+        .user_id = upstream.user_id,
+        .account_id = upstream.account_id,
+        .group_id = upstream.group_id,
         .model = parsed.model,
-        .upstream_model = target.mapped_model,
+        .upstream_model = upstream.mapped_model,
         .input_tokens = forward_result.input_tokens,
         .output_tokens = forward_result.output_tokens,
         .cache_create_tokens = forward_result.cache_create_tokens,

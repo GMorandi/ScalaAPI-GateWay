@@ -45,7 +45,8 @@ static int extract_usage_int(std::string_view body, std::string_view key) {
 ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
                                   std::string_view body,
                                   bool stream,
-                                  StreamWriteFn stream_write) {
+                                  StreamWriteFn stream_write,
+                                  ProtocolMode protocol_mode) {
     ForwardResult result;
 
     std::string url = target.base_url;
@@ -122,6 +123,7 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         }
 
         result.stream = false;
+        result.body = std::move(resp_body);
     } else {
         StreamPipeConfig pipe_cfg{
             .read_buf_size = impl_->config.read_buf_size,
@@ -133,7 +135,7 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
             .inject_keepalive = true,
         };
 
-        StreamPipe pipe(pipe_cfg, ProtocolMode::Passthrough);
+        StreamPipe pipe(pipe_cfg, protocol_mode);
 
         auto upstream_read = [&](char* buf, size_t len) -> ssize_t {
             return op->resp.read(buf, len);

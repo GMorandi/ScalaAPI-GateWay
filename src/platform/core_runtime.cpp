@@ -10,6 +10,7 @@
 
 #include <photon/photon.h>
 #include <photon/thread/thread.h>
+#include <photon/thread/thread11.h>
 
 #include <atomic>
 #include <thread>
@@ -75,6 +76,15 @@ void CoreRuntime::start() {
                 *state->speculative_cache, *state->collector);
 
             state->running.store(true);
+
+            auto* inv_sub = state->invalidation_sub.get();
+            state->bg_invalidation = photon::thread_create11(
+                [inv_sub]() { inv_sub->run_loop(); });
+
+            auto* reporter = state->usage_reporter.get();
+            state->bg_usage = photon::thread_create11(
+                [reporter]() { reporter->run_loop(); });
+
             impl_->core_states[i] = std::move(state);
 
             LOG_INFO("Core {} initialized", i);
@@ -83,6 +93,8 @@ void CoreRuntime::start() {
                 photon::thread_sleep(1);
             }
 
+            impl_->core_states[i]->invalidation_sub->stop();
+            impl_->core_states[i]->usage_reporter->stop();
             impl_->core_states[i]->running.store(false);
             photon::fini();
         });

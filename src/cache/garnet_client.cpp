@@ -13,6 +13,7 @@ namespace gateway::cache {
 struct GarnetClient::Impl {
     std::string uds_path;
     int fd = -1;
+    std::string accum;
     char read_buf[64 * 1024];
 
     bool send_command(std::string_view cmd) {
@@ -26,11 +27,49 @@ struct GarnetClient::Impl {
         return true;
     }
 
+    bool fill_until(size_t need) {
+        while (accum.size() < need) {
+            ssize_t n = ::read(fd, read_buf, sizeof(read_buf));
+            if (n <= 0) return false;
+            accum.append(read_buf, n);
+        }
+        return true;
+    }
+
+    bool fill_until_crlf(size_t start = 0) {
+        while (accum.find("\r\n", start) == std::string::npos) {
+            ssize_t n = ::read(fd, read_buf, sizeof(read_buf));
+            if (n <= 0) return false;
+            accum.append(read_buf, n);
+        }
+        return true;
+    }
+
     std::string read_response() {
         if (fd < 0) return "";
-        ssize_t n = ::read(fd, read_buf, sizeof(read_buf));
-        if (n <= 0) return "";
-        return std::string(read_buf, n);
+        accum.clear();
+
+        if (!fill_until_crlf()) return "";
+
+        if (accum[0] == '$') {
+            auto crlf = accum.find("\r\n");
+            auto len_str = accum.substr(1, crlf - 1);
+            int64_t len = std::atoll(len_str.c_str());
+            if (len < 0) {
+                accum.erase(0, crlf + 2);
+                return "$-1\r\n";
+            }
+            size_t total_needed = crlf + 2 + len + 2;
+            if (!fill_until(total_needed)) return "";
+            auto result = accum.substr(0, total_needed);
+            accum.erase(0, total_needed);
+            return result;
+        }
+
+        auto crlf = accum.find("\r\n");
+        auto result = accum.substr(0, crlf + 2);
+        accum.erase(0, crlf + 2);
+        return result;
     }
 };
 
@@ -99,7 +138,9 @@ std::vector<GarnetResponse> GarnetClient::mget(std::vector<std::string_view> key
 }
 
 bool GarnetClient::ping() {
-    return impl_->send_command("*1\r\n$4\r\nPING\r\n");
+    if (!impl_->send_command("*1\r\n$4\r\nPING\r\n")) return false;
+    auto resp = impl_->read_response();
+    return resp.starts_with("+PONG");
 }
 
 }  // namespace gateway::cache

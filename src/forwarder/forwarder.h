@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dispatch/capnp_dispatch_client.h"
+#include "forwarder/stream_pipe.h"
 #include <functional>
 #include <memory>
 #include <string>
@@ -13,6 +14,7 @@ using StreamWriteFn = std::function<ssize_t(const char*, size_t)>;
 struct ForwardResult {
     int status_code = 0;
     bool stream = false;
+    std::string body;
     int input_tokens = 0;
     int output_tokens = 0;
     int cache_create_tokens = 0;
@@ -40,7 +42,8 @@ public:
     ForwardResult forward(const dispatch::UpstreamTarget& target,
                           std::string_view body,
                           bool stream,
-                          StreamWriteFn stream_write = nullptr);
+                          StreamWriteFn stream_write = nullptr,
+                          ProtocolMode protocol_mode = ProtocolMode::Passthrough);
 
 private:
     struct Impl;
