@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -10,6 +11,8 @@ namespace gateway::auth { class SpeculativeCache; }
 namespace gateway::usage { class UsageCollector; }
 
 namespace gateway::server {
+
+using StreamWriteFn = std::function<ssize_t(const char*, size_t)>;
 
 struct HttpRequest {
     std::string_view method;
@@ -24,6 +27,7 @@ struct HttpResponse {
     int status_code = 200;
     std::string body;
     bool stream = false;
+    StreamWriteFn stream_write;
 };
 
 class Router {

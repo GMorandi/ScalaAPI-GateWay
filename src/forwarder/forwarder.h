@@ -1,11 +1,14 @@
 #pragma once
 
 #include "dispatch/capnp_dispatch_client.h"
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
 
 namespace gateway::forwarder {
+
+using StreamWriteFn = std::function<ssize_t(const char*, size_t)>;
 
 struct ForwardResult {
     int status_code = 0;
@@ -34,10 +37,10 @@ public:
     static std::unique_ptr<Forwarder> create(const ForwardConfig& config);
     ~Forwarder();
 
-    ForwardResult forward(void* client_req, void* client_resp,
-                          const dispatch::UpstreamTarget& target,
+    ForwardResult forward(const dispatch::UpstreamTarget& target,
                           std::string_view body,
-                          bool stream);
+                          bool stream,
+                          StreamWriteFn stream_write = nullptr);
 
 private:
     struct Impl;

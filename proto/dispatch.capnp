@@ -70,3 +70,8 @@ struct RejectInfo {
     quotaExhausted @7;
   }
 }
+
+struct AbortRequest {
+  leaseToken @0 :Text;
+  reason @1 :Text;
+}

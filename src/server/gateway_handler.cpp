@@ -2,11 +2,11 @@
 #include "platform/logging.h"
 #include "platform/metrics.h"
 
+#include <photon/thread/thread.h>
 #include <xxhash.h>
 
 #include <chrono>
 #include <format>
-#include <thread>
 
 namespace gateway::server {
 
@@ -116,8 +116,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         }
 
         if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Wait) {
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(dispatch_result.wait_timeout_ms));
+            photon::thread_usleep(
+                static_cast<uint64_t>(dispatch_result.wait_timeout_ms) * 1000);
             continue;
         }
     }
@@ -137,7 +137,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         req.body, inbound_format, upstream_format, target.mapped_model);
 
     auto forward_result = forwarder_->forward(
-        nullptr, nullptr, target, upstream_body, is_stream);
+        target, upstream_body, is_stream, resp.stream_write);
 
     // --- Step 7: Handle upstream errors with failover ---
     if (forward_result.status_code >= 400 && forward_result.status_code != 400) {

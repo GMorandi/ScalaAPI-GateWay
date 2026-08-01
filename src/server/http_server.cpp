@@ -71,27 +71,50 @@ static int http_handler(void* self, photon::net::http::Request& req,
         body.resize(total);
     }
 
+    std::string client_ip;
+    auto xff = req.headers["X-Forwarded-For"];
+    if (!xff.empty()) {
+        auto comma = xff.find(',');
+        client_ip = xff.substr(0, comma);
+        while (!client_ip.empty() && client_ip.back() == ' ')
+            client_ip.pop_back();
+    } else {
+        auto real_ip = req.headers["X-Real-IP"];
+        if (!real_ip.empty()) client_ip = std::string(real_ip);
+    }
+
     HttpRequest gw_req{
         .method = verb_to_sv(req.verb()),
         .path = path,
         .body = body,
         .authorization = auth_hdr,
         .x_api_key = api_key_hdr,
-        .client_ip = "",
+        .client_ip = client_ip,
     };
 
     HttpResponse gw_resp;
+    bool headers_sent = false;
+
+    gw_resp.stream_write = [&](const char* data, size_t len) -> ssize_t {
+        if (!headers_sent) {
+            headers_sent = true;
+            resp.set_result(200);
+            resp.headers.insert("Content-Type", "text/event-stream");
+            resp.headers.insert("Cache-Control", "no-cache");
+            resp.headers.insert("Connection", "keep-alive");
+        }
+        return resp.write(data, len);
+    };
+
     ctx->router->handle_request(gw_req, gw_resp);
 
-    resp.set_result(gw_resp.status_code);
-    if (gw_resp.stream) {
-        resp.headers.insert("Content-Type", "text/event-stream");
-        resp.headers.insert("Cache-Control", "no-cache");
-        resp.headers.insert("Connection", "keep-alive");
-    } else {
-        resp.headers.insert("Content-Type", "application/json");
-        resp.headers.content_length(gw_resp.body.size());
+    if (headers_sent) {
+        return 0;
     }
+
+    resp.set_result(gw_resp.status_code);
+    resp.headers.insert("Content-Type", "application/json");
+    resp.headers.content_length(gw_resp.body.size());
 
     if (!gw_resp.body.empty()) {
         resp.write(gw_resp.body.data(), gw_resp.body.size());

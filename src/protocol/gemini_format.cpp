@@ -75,12 +75,11 @@ ChatRequest parse_request(std::string_view body) {
                             fc["args"].Accept(w);
                             b.tool_arguments = sb.GetString();
                         }
-                        msg.content.push_back(std::move(b));
-
                         ToolCall tc;
                         tc.name = b.tool_name;
                         tc.id = b.tool_call_id;
                         tc.arguments = b.tool_arguments;
+                        msg.content.push_back(std::move(b));
                         msg.tool_calls.push_back(std::move(tc));
                     } else if (p.HasMember("functionResponse") && p["functionResponse"].IsObject()) {
                         auto& fr = p["functionResponse"];
@@ -94,8 +93,8 @@ ChatRequest parse_request(std::string_view body) {
                             fr["response"].Accept(w);
                             b.text = sb.GetString();
                         }
-                        msg.content.push_back(std::move(b));
                         msg.tool_call_id = b.tool_call_id;
+                        msg.content.push_back(std::move(b));
                     }
                 }
             }

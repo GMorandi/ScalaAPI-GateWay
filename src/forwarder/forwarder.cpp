@@ -1,4 +1,5 @@
 #include "forwarder/forwarder.h"
+#include "forwarder/connection_pool.h"
 #include "forwarder/stream_pipe.h"
 #include "platform/logging.h"
 
@@ -13,25 +14,18 @@ namespace gateway::forwarder {
 
 struct Forwarder::Impl {
     ForwardConfig config;
-    photon::net::http::Client* http_client = nullptr;
+    std::unique_ptr<ConnectionPool> pool;
 };
 
 std::unique_ptr<Forwarder> Forwarder::create(const ForwardConfig& config) {
     auto f = std::make_unique<Forwarder>();
     f->impl_ = std::make_unique<Impl>();
     f->impl_->config = config;
-    f->impl_->http_client = photon::net::http::new_http_client();
-    if (!f->impl_->http_client) {
-        LOG_ERROR("Failed to create HTTP client for forwarder");
-    }
+    f->impl_->pool = ConnectionPool::create(64);
     return f;
 }
 
-Forwarder::~Forwarder() {
-    if (impl_->http_client) {
-        delete impl_->http_client;
-    }
-}
+Forwarder::~Forwarder() = default;
 
 static int extract_usage_int(std::string_view body, std::string_view key) {
     auto pos = body.find(key);
@@ -48,17 +42,11 @@ static int extract_usage_int(std::string_view body, std::string_view key) {
     return val;
 }
 
-ForwardResult Forwarder::forward(void* client_req, void* client_resp,
-                                  const dispatch::UpstreamTarget& target,
+ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
                                   std::string_view body,
-                                  bool stream) {
+                                  bool stream,
+                                  StreamWriteFn stream_write) {
     ForwardResult result;
-
-    if (!impl_->http_client) {
-        result.status_code = 502;
-        result.error = "HTTP client not available";
-        return result;
-    }
 
     std::string url = target.base_url;
     if (!target.upstream_path.empty()) {
@@ -73,7 +61,14 @@ ForwardResult Forwarder::forward(void* client_req, void* client_resp,
         return result;
     }
 
-    auto* op = impl_->http_client->new_operation(
+    auto* http_client = impl_->pool->get_client(target.base_url);
+    if (!http_client) {
+        result.status_code = 502;
+        result.error = "HTTP client not available";
+        return result;
+    }
+
+    auto* op = http_client->new_operation(
         photon::net::http::Verb::POST, url);
 
     op->timeout = {impl_->config.total_stream_timeout_ms * 1000ULL};
@@ -96,7 +91,7 @@ ForwardResult Forwarder::forward(void* client_req, void* client_resp,
         result.status_code = 502;
         result.error = "upstream connection failed";
         LOG_ERROR("Forward to {} failed: {}", url, strerror(errno));
-        impl_->http_client->destroy_operation(op);
+        http_client->destroy_operation(op);
         return result;
     }
 
@@ -144,10 +139,11 @@ ForwardResult Forwarder::forward(void* client_req, void* client_resp,
             return op->resp.read(buf, len);
         };
 
-        // For now, accumulate the stream response (full SSE relay requires
-        // access to the client's photon Response object for writing)
         std::string accumulated;
         auto client_write = [&](const char* data, size_t len) -> ssize_t {
+            if (stream_write) {
+                return stream_write(data, len);
+            }
             accumulated.append(data, len);
             return static_cast<ssize_t>(len);
         };
@@ -164,7 +160,7 @@ ForwardResult Forwarder::forward(void* client_req, void* client_resp,
         result.client_disconnect = stream_result.client_disconnect;
     }
 
-    impl_->http_client->destroy_operation(op);
+    http_client->destroy_operation(op);
     return result;
 }
 

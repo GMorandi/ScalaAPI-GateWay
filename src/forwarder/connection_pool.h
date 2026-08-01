@@ -4,6 +4,8 @@
 #include <memory>
 #include <string>
 
+namespace photon::net::http { class Client; }
+
 namespace gateway::forwarder {
 
 class ConnectionPool {
@@ -11,8 +13,7 @@ public:
     static std::unique_ptr<ConnectionPool> create(size_t max_per_host = 64);
     ~ConnectionPool();
 
-    void* acquire(const std::string& host, uint16_t port, bool tls);
-    void release(void* conn);
+    photon::net::http::Client* get_client(const std::string& host);
 
 private:
     struct Impl;
