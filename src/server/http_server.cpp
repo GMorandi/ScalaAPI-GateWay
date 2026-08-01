@@ -1,5 +1,6 @@
 #include "server/http_server.h"
 #include "server/router.h"
+#include "server/websocket.h"
 #include "cache/garnet_client.h"
 #include "dispatch/capnp_dispatch_client.h"
 #include "auth/speculative_cache.h"
@@ -48,6 +49,48 @@ static int http_handler(void* self, photon::net::http::Request& req,
     auto path = target.substr(0, target.find('?'));
     auto auth_hdr = req.headers["Authorization"];
     auto api_key_hdr = req.headers["X-Api-Key"];
+
+    auto upgrade_hdr = req.headers["Upgrade"];
+    auto connection_hdr = req.headers["Connection"];
+    if (is_websocket_upgrade(upgrade_hdr, connection_hdr)) {
+        auto ws_key = req.headers["Sec-WebSocket-Key"];
+        auto accept = compute_websocket_accept(ws_key);
+
+        resp.set_result(101);
+        resp.headers.insert("Upgrade", "websocket");
+        resp.headers.insert("Connection", "Upgrade");
+        resp.headers.insert("Sec-WebSocket-Accept", accept);
+        resp.send();
+
+        LOG_INFO("WebSocket upgrade accepted for path {}", path);
+
+        uint8_t buf[65536];
+        for (;;) {
+            ssize_t n = req.read(buf, sizeof(buf));
+            if (n <= 0) break;
+
+            WsFrame frame;
+            size_t consumed = 0;
+            if (!parse_ws_frame(buf, static_cast<size_t>(n), frame, consumed))
+                break;
+
+            if (frame.opcode == 0x8) {
+                auto close_frame = encode_ws_frame(0x8, "");
+                resp.write(close_frame.data(), close_frame.size());
+                break;
+            }
+
+            if (frame.opcode == 0x9) {
+                auto pong = encode_ws_frame(0xA, frame.payload);
+                resp.write(pong.data(), pong.size());
+                continue;
+            }
+
+            auto reply = encode_ws_frame(frame.opcode, frame.payload);
+            resp.write(reply.data(), reply.size());
+        }
+        return 0;
+    }
 
     std::string body;
     auto content_length = req.headers["Content-Length"];
