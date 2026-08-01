@@ -11,6 +11,13 @@ std::string serialize_stream_event(const StreamDelta& delta);
 StreamDelta parse_stream_event(std::string_view data);
 }
 
+namespace gateway::protocol::openai_responses {
+ChatRequest parse_request(std::string_view body);
+std::string serialize_request(const ChatRequest& req);
+std::string serialize_stream_event(const StreamDelta& delta);
+StreamDelta parse_stream_event(std::string_view data);
+}
+
 namespace gateway::protocol::anthropic {
 ChatRequest parse_request(std::string_view body);
 std::string serialize_request(const ChatRequest& req);

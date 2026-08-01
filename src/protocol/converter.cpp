@@ -16,8 +16,10 @@ ParsedRequest Converter::parse(std::string_view body, Format hint) {
         ir = anthropic::parse_request(body);
         break;
     case Format::OpenAIChatCompletions:
-    case Format::OpenAIResponses:
         ir = openai::parse_request(body);
+        break;
+    case Format::OpenAIResponses:
+        ir = openai_responses::parse_request(body);
         break;
     case Format::Gemini:
         ir = gemini::parse_request(body);
@@ -44,8 +46,10 @@ std::string Converter::convert_request(std::string_view body,
         ir = anthropic::parse_request(body);
         break;
     case Format::OpenAIChatCompletions:
-    case Format::OpenAIResponses:
         ir = openai::parse_request(body);
+        break;
+    case Format::OpenAIResponses:
+        ir = openai_responses::parse_request(body);
         break;
     case Format::Gemini:
         ir = gemini::parse_request(body);
@@ -59,8 +63,9 @@ std::string Converter::convert_request(std::string_view body,
     case Format::Anthropic:
         return anthropic::serialize_request(ir);
     case Format::OpenAIChatCompletions:
-    case Format::OpenAIResponses:
         return openai::serialize_request(ir);
+    case Format::OpenAIResponses:
+        return openai_responses::serialize_request(ir);
     case Format::Gemini:
         return gemini::serialize_request(ir);
     }
@@ -77,8 +82,10 @@ std::string Converter::convert_stream_event(std::string_view sse_data,
     StreamDelta delta;
     switch (from) {
     case Format::OpenAIChatCompletions:
-    case Format::OpenAIResponses:
         delta = openai::parse_stream_event(sse_data);
+        break;
+    case Format::OpenAIResponses:
+        delta = openai_responses::parse_stream_event(sse_data);
         break;
     case Format::Gemini:
         delta = gemini::parse_stream_event(sse_data);
@@ -89,8 +96,9 @@ std::string Converter::convert_stream_event(std::string_view sse_data,
 
     switch (to) {
     case Format::OpenAIChatCompletions:
-    case Format::OpenAIResponses:
         return openai::serialize_stream_event(delta);
+    case Format::OpenAIResponses:
+        return openai_responses::serialize_stream_event(delta);
     case Format::Anthropic:
         return anthropic::serialize_stream_event(delta);
     case Format::Gemini:

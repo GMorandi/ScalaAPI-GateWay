@@ -52,6 +52,7 @@ add_library(gateway_core STATIC
     src/protocol/converter.cpp
     src/protocol/anthropic_format.cpp
     src/protocol/openai_format.cpp
+    src/protocol/openai_responses_format.cpp
     src/protocol/gemini_format.cpp
     src/forwarder/forwarder.cpp
     src/forwarder/connection_pool.cpp
