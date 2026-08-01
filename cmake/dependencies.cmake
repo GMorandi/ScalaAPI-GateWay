@@ -12,6 +12,7 @@ FetchContent_Declare(
 )
 set(PHOTON_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(PHOTON_ENABLE_URING OFF CACHE BOOL "" FORCE)
+set(PHOTON_CXX_STANDARD 17 CACHE STRING "" FORCE)
 FetchContent_MakeAvailable(photon)
 
 # Cap'n Proto

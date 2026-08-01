@@ -33,6 +33,8 @@ int main(int argc, char** argv) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
+    photon::init(photon::INIT_EVENT_EPOLL, photon::INIT_IO_NONE);
+
     gateway::platform::CoreRuntimeConfig config{
         .num_cores = cores,
         .listen_port = port,

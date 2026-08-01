@@ -42,7 +42,7 @@ std::unique_ptr<GarnetClient> GarnetClient::connect(const std::string& uds_path)
     int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         LOG_ERROR("Failed to create unix socket for Garnet");
-        return nullptr;
+        return client;
     }
 
     struct sockaddr_un addr{};
@@ -52,7 +52,7 @@ std::unique_ptr<GarnetClient> GarnetClient::connect(const std::string& uds_path)
     if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
         LOG_ERROR("Failed to connect to Garnet at {}", uds_path);
         ::close(fd);
-        return nullptr;
+        return client;
     }
 
     client->impl_->fd = fd;
