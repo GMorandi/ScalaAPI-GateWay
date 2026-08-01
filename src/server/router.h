@@ -6,7 +6,8 @@
 
 namespace gateway::cache { class GarnetClient; }
 namespace gateway::dispatch { class CapnpDispatchClient; }
-namespace gateway::usage { class UsageReporter; }
+namespace gateway::auth { class SpeculativeCache; }
+namespace gateway::usage { class UsageCollector; }
 
 namespace gateway::server {
 
@@ -30,7 +31,8 @@ public:
     static std::unique_ptr<Router> create(
         cache::GarnetClient& garnet,
         dispatch::CapnpDispatchClient& dispatch,
-        usage::UsageReporter& usage_reporter);
+        auth::SpeculativeCache& auth_cache,
+        usage::UsageCollector& collector);
 
     ~Router();
 

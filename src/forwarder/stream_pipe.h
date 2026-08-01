@@ -51,7 +51,7 @@ private:
     StreamResult run_transform(ReadFn& read, WriteFn& write);
 
     void extract_usage_from_event(std::string_view event_data, StreamResult& result);
-    std::string_view transform_event(std::string_view event_data);
+    std::string transform_event(std::string_view event_data);
     bool inject_keepalive(WriteFn& write, uint64_t last_write_ms);
 
     StreamPipeConfig config_;

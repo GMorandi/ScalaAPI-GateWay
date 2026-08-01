@@ -7,15 +7,17 @@ namespace gateway::dispatch { class CapnpDispatchClient; }
 
 namespace gateway::usage {
 
+class UsageCollector;
+
 class UsageReporter {
 public:
     static std::unique_ptr<UsageReporter> create(
-        dispatch::CapnpDispatchClient& dispatch);
+        dispatch::CapnpDispatchClient& dispatch,
+        UsageCollector& collector);
     ~UsageReporter();
 
     void run_loop();
     void stop();
-    void enqueue(class UsageCollector& collector);
 
 private:
     struct Impl;

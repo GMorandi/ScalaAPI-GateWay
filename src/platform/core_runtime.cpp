@@ -4,6 +4,8 @@
 #include "cache/garnet_client.h"
 #include "dispatch/capnp_dispatch_client.h"
 #include "auth/invalidation_subscriber.h"
+#include "auth/speculative_cache.h"
+#include "usage/usage_collector.h"
 #include "usage/usage_reporter.h"
 
 #include <photon/photon.h>
@@ -17,6 +19,8 @@ namespace gateway::platform {
 struct PerCoreState {
     std::unique_ptr<cache::GarnetClient> garnet;
     std::unique_ptr<dispatch::CapnpDispatchClient> dispatch;
+    std::unique_ptr<auth::SpeculativeCache> speculative_cache;
+    std::unique_ptr<usage::UsageCollector> collector;
     std::unique_ptr<auth::InvalidationSubscriber> invalidation_sub;
     std::unique_ptr<usage::UsageReporter> usage_reporter;
     std::unique_ptr<server::HttpServer> http_server;
@@ -55,10 +59,12 @@ void CoreRuntime::start() {
                 impl_->config.garnet_uds_path);
             state->dispatch = dispatch::CapnpDispatchClient::connect(
                 impl_->config.capnp_uds_path);
+            state->speculative_cache = auth::SpeculativeCache::create();
+            state->collector = std::make_unique<usage::UsageCollector>();
             state->invalidation_sub = auth::InvalidationSubscriber::create(
-                *state->dispatch);
+                *state->dispatch, *state->garnet, *state->speculative_cache);
             state->usage_reporter = usage::UsageReporter::create(
-                *state->dispatch);
+                *state->dispatch, *state->collector);
 
             server::HttpServerConfig http_cfg{
                 .port = impl_->config.listen_port,
@@ -66,7 +72,7 @@ void CoreRuntime::start() {
             };
             state->http_server = server::HttpServer::create(
                 http_cfg, *state->garnet, *state->dispatch,
-                *state->usage_reporter);
+                *state->speculative_cache, *state->collector);
 
             state->running.store(true);
             impl_->core_states[i] = std::move(state);

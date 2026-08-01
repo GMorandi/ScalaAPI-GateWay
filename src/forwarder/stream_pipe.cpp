@@ -1,4 +1,5 @@
 #include "forwarder/stream_pipe.h"
+#include "protocol/formats.h"
 #include "platform/logging.h"
 
 #include <photon/thread/thread.h>
@@ -203,12 +204,50 @@ void StreamPipe::extract_usage_from_event(std::string_view event_data,
     if (auto v = find_int("\"cache_read_input_tokens\""); v > 0) result.cache_read_tokens = v;
 }
 
-std::string_view StreamPipe::transform_event(std::string_view event_data) {
-    // Cross-protocol SSE event transformation
-    // Anthropic → OpenAI CC: content_block_delta → choices[0].delta.content
-    // OpenAI CC → Anthropic: choices[0].delta → content_block_delta
-    // For now, passthrough (full implementation depends on protocol pair)
-    return event_data;
+std::string StreamPipe::transform_event(std::string_view event_data) {
+    std::string_view event_type;
+    std::string_view data_payload;
+
+    // Parse SSE frame: extract "event:" and "data:" fields
+    size_t pos = 0;
+    while (pos < event_data.size()) {
+        auto line_end = event_data.find('\n', pos);
+        if (line_end == std::string_view::npos) line_end = event_data.size();
+        auto line = event_data.substr(pos, line_end - pos);
+
+        if (line.starts_with("event:")) {
+            event_type = line.substr(6);
+            while (!event_type.empty() && event_type.front() == ' ')
+                event_type.remove_prefix(1);
+        } else if (line.starts_with("data:")) {
+            auto payload = line.substr(5);
+            while (!payload.empty() && payload.front() == ' ')
+                payload.remove_prefix(1);
+            data_payload = payload;
+        }
+        pos = line_end + 1;
+    }
+
+    if (data_payload.empty()) return std::string(event_data);
+
+    protocol::StreamDelta delta;
+
+    switch (mode_) {
+    case ProtocolMode::AnthropicToOpenAI:
+        delta = protocol::anthropic::parse_stream_event(event_type, data_payload);
+        return protocol::openai::serialize_stream_event(delta);
+
+    case ProtocolMode::OpenAIToAnthropic:
+        delta = protocol::openai::parse_stream_event(data_payload);
+        return protocol::anthropic::serialize_stream_event(delta);
+
+    case ProtocolMode::GeminiCompat:
+        delta = protocol::gemini::parse_stream_event(data_payload);
+        return protocol::openai::serialize_stream_event(delta);
+
+    default:
+        return std::string(event_data);
+    }
 }
 
 bool StreamPipe::inject_keepalive(WriteFn& write, uint64_t last_write_ms) {

@@ -7,22 +7,23 @@
 namespace gateway::server {
 
 struct Router::Impl {
-    std::unique_ptr<auth::SpeculativeCache> auth_cache;
-    std::unique_ptr<usage::UsageCollector> collector;
+    auth::SpeculativeCache* auth_cache;
+    usage::UsageCollector* collector;
     std::unique_ptr<GatewayHandler> gateway;
 };
 
 std::unique_ptr<Router> Router::create(
     cache::GarnetClient& garnet,
     dispatch::CapnpDispatchClient& dispatch,
-    usage::UsageReporter& usage_reporter) {
+    auth::SpeculativeCache& auth_cache,
+    usage::UsageCollector& collector) {
 
     auto r = std::make_unique<Router>();
     r->impl_ = std::make_unique<Impl>();
-    r->impl_->auth_cache = auth::SpeculativeCache::create(10000);
-    r->impl_->collector = std::make_unique<usage::UsageCollector>();
+    r->impl_->auth_cache = &auth_cache;
+    r->impl_->collector = &collector;
     r->impl_->gateway = std::make_unique<GatewayHandler>(
-        garnet, dispatch, *r->impl_->collector, *r->impl_->auth_cache);
+        garnet, dispatch, collector, auth_cache);
     return r;
 }
 

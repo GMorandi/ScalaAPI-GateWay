@@ -2,7 +2,8 @@
 #include "server/router.h"
 #include "cache/garnet_client.h"
 #include "dispatch/capnp_dispatch_client.h"
-#include "usage/usage_reporter.h"
+#include "auth/speculative_cache.h"
+#include "usage/usage_collector.h"
 #include "platform/logging.h"
 
 #include <photon/photon.h>
@@ -105,12 +106,13 @@ std::unique_ptr<HttpServer> HttpServer::create(
     const HttpServerConfig& config,
     cache::GarnetClient& garnet,
     dispatch::CapnpDispatchClient& dispatch,
-    usage::UsageReporter& usage_reporter) {
+    auth::SpeculativeCache& auth_cache,
+    usage::UsageCollector& collector) {
 
     auto srv = std::make_unique<HttpServer>();
     srv->impl_ = std::make_unique<Impl>();
     srv->impl_->ctx.config = config;
-    srv->impl_->ctx.router = Router::create(garnet, dispatch, usage_reporter);
+    srv->impl_->ctx.router = Router::create(garnet, dispatch, auth_cache, collector);
 
     if (config.core_id != 0) {
         LOG_INFO("HTTP server: core {} skipping bind (core 0 owns port {})",

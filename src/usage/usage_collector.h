@@ -2,6 +2,7 @@
 
 #include "dispatch/capnp_dispatch_client.h"
 #include <string>
+#include <vector>
 #include <cstdint>
 
 namespace gateway::usage {
@@ -28,6 +29,7 @@ struct UsageEvent {
 class UsageCollector {
 public:
     void record(UsageEvent event);
+    std::vector<UsageEvent> drain();
     size_t pending() const;
 
 private:
