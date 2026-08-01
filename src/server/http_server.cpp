@@ -58,7 +58,6 @@ static int http_handler(void* self, photon::net::http::Request& req,
             resp.headers.insert("Content-Type", "application/json");
             const char* err = R"({"error":"request too large"})";
             resp.headers.content_length(strlen(err));
-            resp.send();
             resp.write(err, strlen(err));
             return 0;
         }
@@ -93,10 +92,11 @@ static int http_handler(void* self, photon::net::http::Request& req,
         resp.headers.insert("Content-Type", "application/json");
         resp.headers.content_length(gw_resp.body.size());
     }
-    resp.send();
 
     if (!gw_resp.body.empty()) {
         resp.write(gw_resp.body.data(), gw_resp.body.size());
+    } else {
+        resp.send();
     }
 
     return 0;
