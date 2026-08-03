@@ -7,11 +7,12 @@ add_compile_options(-fno-strict-aliasing -Wno-error=strict-aliasing)
 FetchContent_Declare(
     photon
     GIT_REPOSITORY https://github.com/alibaba/PhotonLibOS.git
-    GIT_TAG main
+    GIT_TAG a7c4f7067d93a369fabbfff69c3f42595edbd7fd
     GIT_SHALLOW TRUE
 )
 set(PHOTON_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(PHOTON_ENABLE_URING OFF CACHE BOOL "" FORCE)
+set(PHOTON_ENABLE_LIBCURL OFF CACHE BOOL "" FORCE)
 set(PHOTON_CXX_STANDARD 17 CACHE STRING "" FORCE)
 FetchContent_MakeAvailable(photon)
 
@@ -38,10 +39,12 @@ FetchContent_MakeAvailable(simdjson)
 FetchContent_Declare(
     rapidjson
     GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
-    GIT_TAG master
+    GIT_TAG 24b5e7a8b27f42fa16b96fc70aade9106cf7102f
     GIT_SHALLOW TRUE
 )
 set(RAPIDJSON_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(RAPIDJSON_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(RAPIDJSON_BUILD_DOC OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(rapidjson)
 
 # spdlog
@@ -67,23 +70,25 @@ FetchContent_MakeAvailable(xxhash)
 # OpenSSL (system)
 find_package(OpenSSL 3.0 REQUIRED)
 
-# Google Test
-FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.15.2
-    GIT_SHALLOW TRUE
-)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+if(GATEWAY_BUILD_TESTS)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.15.2
+        GIT_SHALLOW TRUE
+    )
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+endif()
 
-# Google Benchmark
-FetchContent_Declare(
-    benchmark
-    GIT_REPOSITORY https://github.com/google/benchmark.git
-    GIT_TAG v1.9.1
-    GIT_SHALLOW TRUE
-)
-set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(benchmark)
+if(GATEWAY_BUILD_BENCHMARKS)
+    FetchContent_Declare(
+        benchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG v1.9.1
+        GIT_SHALLOW TRUE
+    )
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(benchmark)
+endif()

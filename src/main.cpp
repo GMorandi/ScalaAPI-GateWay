@@ -26,6 +26,9 @@ int main(int argc, char** argv) {
         ?: "/var/run/sub2api/garnet.sock";
     std::string capnp_sock = std::getenv("CAPNP_UDS_PATH")
         ?: "/var/run/sub2api/dispatch.sock";
+    std::string usage_db = std::getenv("GATEWAY_USAGE_DB")
+        ?: "/var/lib/sub2api/usage-outbox.db";
+    std::string trusted_proxy_cidrs = std::getenv("GATEWAY_TRUSTED_PROXY_CIDRS") ?: "";
 
     LOG_INFO("Starting gateway: cores={} port={} garnet={} capnp={}",
              cores, port, garnet_sock, capnp_sock);
@@ -40,6 +43,8 @@ int main(int argc, char** argv) {
         .listen_port = port,
         .garnet_uds_path = garnet_sock,
         .capnp_uds_path = capnp_sock,
+        .usage_db_path = usage_db,
+        .trusted_proxy_cidrs = trusted_proxy_cidrs,
     };
 
     auto runtime = gateway::platform::CoreRuntime::create(config);
@@ -56,6 +61,8 @@ int main(int argc, char** argv) {
 
     LOG_INFO("Shutting down gracefully...");
     runtime->stop();
+    runtime.reset();
+    photon::fini();
 
     return 0;
 }

@@ -1,5 +1,6 @@
 #include "dispatch/capnp_dispatch_client.h"
 #include "platform/logging.h"
+#include "platform/metrics.h"
 
 #include <capnp/message.h>
 #include <capnp/serialize-packed.h>
@@ -9,7 +10,12 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <photon/thread/thread.h>
+#include <chrono>
+#include <cerrno>
 #include <cstring>
+#include <algorithm>
+#include <mutex>
 
 namespace gateway::dispatch {
 
@@ -23,6 +29,30 @@ enum class Method : uint8_t {
 struct CapnpDispatchClient::Impl {
     std::string uds_path;
     int fd = -1;
+    photon::mutex mutex;
+    uint32_t reconnect_delay_ms = 50;
+    std::chrono::steady_clock::time_point reconnect_after{};
+
+    void disconnect() {
+        if (fd >= 0) ::close(fd);
+        fd = -1;
+        reconnect_after = std::chrono::steady_clock::now()
+            + std::chrono::milliseconds(reconnect_delay_ms);
+        reconnect_delay_ms = std::min<uint32_t>(reconnect_delay_ms * 2, 3000);
+    }
+
+    bool ensure_connected();
+
+    bool write_all(const void* data, size_t size) {
+        auto* bytes = static_cast<const uint8_t*>(data);
+        size_t written = 0;
+        while (written < size) {
+            auto n = ::send(fd, bytes + written, size - written, MSG_NOSIGNAL);
+            if (n <= 0) return false;
+            written += static_cast<size_t>(n);
+        }
+        return true;
+    }
 
     bool send_frame(Method method, kj::ArrayPtr<const capnp::word> words) {
         if (fd < 0) return false;
@@ -34,16 +64,9 @@ struct CapnpDispatchClient::Impl {
             static_cast<uint8_t>((len >> 16) & 0xFF),
             static_cast<uint8_t>((len >> 24) & 0xFF),
         };
-        if (::write(fd, hdr, 4) != 4) return false;
+        if (!write_all(hdr, sizeof(hdr))) return false;
         uint8_t m = static_cast<uint8_t>(method);
-        if (::write(fd, &m, 1) != 1) return false;
-        size_t total = 0;
-        while (total < bytes.size()) {
-            ssize_t n = ::write(fd, bytes.begin() + total, bytes.size() - total);
-            if (n <= 0) return false;
-            total += n;
-        }
-        return true;
+        return write_all(&m, 1) && write_all(bytes.begin(), bytes.size());
     }
 
     std::vector<uint8_t> recv_frame() {
@@ -67,6 +90,19 @@ struct CapnpDispatchClient::Impl {
         }
         return result;
     }
+
+    std::vector<uint8_t> exchange(Method method, kj::ArrayPtr<const capnp::word> words) {
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            if (!ensure_connected()) return {};
+            if (send_frame(method, words)) {
+                auto response = recv_frame();
+                if (!response.empty()) return response;
+            }
+            disconnect();
+            if (attempt == 0) photon::thread_usleep(50'000);
+        }
+        return {};
+    }
 };
 
 static int connect_uds(const std::string& path) {
@@ -81,7 +117,32 @@ static int connect_uds(const std::string& path) {
         ::close(fd);
         return -1;
     }
+    timeval timeout{3, 0};
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     return fd;
+}
+
+bool CapnpDispatchClient::Impl::ensure_connected() {
+    if (fd >= 0) {
+        char byte;
+        auto result = ::recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (result > 0 || (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)))
+            return true;
+        disconnect();
+    }
+    if (std::chrono::steady_clock::now() < reconnect_after) return false;
+    fd = connect_uds(uds_path);
+    if (fd < 0) {
+        reconnect_after = std::chrono::steady_clock::now()
+            + std::chrono::milliseconds(reconnect_delay_ms);
+        reconnect_delay_ms = std::min<uint32_t>(reconnect_delay_ms * 2, 3000);
+        return false;
+    }
+    reconnect_delay_ms = 50;
+    platform::global_metrics().dispatch_reconnects.fetch_add(1, std::memory_order_relaxed);
+    LOG_INFO("Dispatch RPC connected to {}", uds_path);
+    return true;
 }
 
 std::unique_ptr<CapnpDispatchClient> CapnpDispatchClient::connect(
@@ -90,13 +151,7 @@ std::unique_ptr<CapnpDispatchClient> CapnpDispatchClient::connect(
     client->impl_ = std::make_unique<Impl>();
     client->impl_->uds_path = uds_path;
 
-    int fd = connect_uds(uds_path);
-    if (fd < 0) {
-        LOG_ERROR("Dispatch RPC: cannot connect to {}", uds_path);
-        return client;
-    }
-    client->impl_->fd = fd;
-    LOG_INFO("Dispatch RPC connected to {} (capnp binary)", uds_path);
+    client->impl_->ensure_connected();
     return client;
 }
 
@@ -108,12 +163,7 @@ CapnpDispatchClient::~CapnpDispatchClient() {
 
 DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     DispatchResult result;
-
-    if (impl_->fd < 0) {
-        result.outcome = DispatchResult::Outcome::Rejected;
-        result.reject_message = "RPC not connected";
-        return result;
-    }
+    std::lock_guard<photon::mutex> guard(impl_->mutex);
 
     capnp::MallocMessageBuilder msg;
     auto builder = msg.initRoot<::DispatchRequest>();
@@ -125,6 +175,8 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     builder.setCachedAuthVersion(req.cached_auth_version);
     builder.setEndpoint(static_cast<::DispatchRequest::EndpointKind>(req.endpoint));
     builder.setMetadataUserId(req.metadata_user_id);
+    builder.setProtocolVersion(2);
+    builder.setStream(req.stream);
 
     auto excluded = builder.initExcludedAccounts(req.excluded_accounts.size());
     for (size_t i = 0; i < req.excluded_accounts.size(); ++i) {
@@ -132,25 +184,26 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     }
 
     auto words = capnp::messageToFlatArray(msg);
-    if (!impl_->send_frame(Method::Dispatch, words)) {
-        result.outcome = DispatchResult::Outcome::Rejected;
-        result.reject_message = "send failed";
-        return result;
-    }
-
-    auto resp_bytes = impl_->recv_frame();
+    auto resp_bytes = impl_->exchange(Method::Dispatch, words);
     if (resp_bytes.empty()) {
         result.outcome = DispatchResult::Outcome::Rejected;
-        result.reject_message = "no response";
+        result.reject_message = "platform unavailable";
+        result.reject_code = 8;
         return result;
     }
 
-    // Skip 1-byte method prefix in response
-    auto payload = kj::arrayPtr(
-        reinterpret_cast<const capnp::word*>(resp_bytes.data() + 1),
-        (resp_bytes.size() - 1) / sizeof(capnp::word));
-    capnp::FlatArrayMessageReader reader(payload);
+    if (resp_bytes[0] != 0x81 || (resp_bytes.size() - 1) % sizeof(capnp::word) != 0)
+        return result;
+    std::vector<capnp::word> aligned((resp_bytes.size() - 1) / sizeof(capnp::word));
+    std::memcpy(aligned.data(), resp_bytes.data() + 1, resp_bytes.size() - 1);
+    capnp::FlatArrayMessageReader reader(kj::arrayPtr(aligned.data(), aligned.size()));
     auto resp = reader.getRoot<::DispatchResponse>();
+    if (resp.getProtocolVersion() != 2) {
+        LOG_ERROR("Dispatch protocol version mismatch: expected=2 received={}",
+                  resp.getProtocolVersion());
+        result.reject_message = "dispatch protocol version mismatch";
+        return result;
+    }
 
     switch (resp.getOutcome()) {
         case ::DispatchResponse::Outcome::OK:
@@ -165,6 +218,7 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
 
     result.auth_version = resp.getAuthVersion();
     result.lease_token = resp.getLeaseToken();
+    if (resp.hasAuth()) result.api_key_id = resp.getAuth().getApiKeyId();
 
     if (resp.hasReject()) {
         auto reject = resp.getReject();
@@ -205,19 +259,31 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     return result;
 }
 
-void CapnpDispatchClient::report_usage(const UsageReportData& report) {
-    if (impl_->fd < 0) return;
+static RpcAck parse_ack(const std::vector<uint8_t>& response, uint8_t method) {
+    RpcAck ack;
+    if (response.size() <= 1 || response[0] != method
+        || (response.size() - 1) % sizeof(capnp::word) != 0) {
+        ack.retryable = true;
+        ack.error_code = "invalid_ack";
+        return ack;
+    }
+    std::vector<capnp::word> aligned((response.size() - 1) / sizeof(capnp::word));
+    std::memcpy(aligned.data(), response.data() + 1, response.size() - 1);
+    capnp::FlatArrayMessageReader reader(kj::arrayPtr(aligned.data(), aligned.size()));
+    auto wire = reader.getRoot<::WriteAck>();
+    ack.accepted = wire.getAccepted();
+    ack.duplicate = wire.getDuplicate();
+    ack.retryable = wire.getRetryable();
+    ack.error_code = wire.getErrorCode();
+    return ack;
+}
+
+RpcAck CapnpDispatchClient::report_usage(const UsageReportData& report) {
+    std::lock_guard<photon::mutex> guard(impl_->mutex);
 
     capnp::MallocMessageBuilder msg;
     auto builder = msg.initRoot<::UsageReport>();
     builder.setLeaseToken(report.lease_token);
-    builder.setRequestId(report.request_id);
-    builder.setApiKeyId(report.api_key_id);
-    builder.setUserId(report.user_id);
-    builder.setAccountId(report.account_id);
-    builder.setGroupId(report.group_id);
-    builder.setModel(report.model);
-    builder.setUpstreamModel(report.upstream_model);
     builder.setInputTokens(report.input_tokens);
     builder.setOutputTokens(report.output_tokens);
     builder.setCacheCreateTokens(report.cache_create_tokens);
@@ -226,15 +292,15 @@ void CapnpDispatchClient::report_usage(const UsageReportData& report) {
     builder.setFirstTokenMs(report.first_token_ms);
     builder.setStream(report.stream);
     builder.setClientDisconnect(report.client_disconnect);
+    builder.setStatusCode(report.status_code);
 
     auto words = capnp::messageToFlatArray(msg);
-    impl_->send_frame(Method::ReportUsage, words);
-    impl_->recv_frame();
+    return parse_ack(impl_->exchange(Method::ReportUsage, words), 0x82);
 }
 
-void CapnpDispatchClient::abort(const std::string& lease_token,
-                                 const std::string& reason) {
-    if (impl_->fd < 0) return;
+RpcAck CapnpDispatchClient::abort(const std::string& lease_token,
+                                  const std::string& reason) {
+    std::lock_guard<photon::mutex> guard(impl_->mutex);
 
     capnp::MallocMessageBuilder msg;
     auto builder = msg.initRoot<::AbortRequest>();
@@ -242,12 +308,11 @@ void CapnpDispatchClient::abort(const std::string& lease_token,
     builder.setReason(reason);
 
     auto words = capnp::messageToFlatArray(msg);
-    impl_->send_frame(Method::Abort, words);
-    impl_->recv_frame();
+    return parse_ack(impl_->exchange(Method::Abort, words), 0x83);
 }
 
-void CapnpDispatchClient::report_upstream_error(const ErrorReportData& error) {
-    if (impl_->fd < 0) return;
+RpcAck CapnpDispatchClient::report_upstream_error(const ErrorReportData& error) {
+    std::lock_guard<photon::mutex> guard(impl_->mutex);
 
     capnp::MallocMessageBuilder msg;
     auto builder = msg.initRoot<::ErrorReport>();
@@ -258,8 +323,12 @@ void CapnpDispatchClient::report_upstream_error(const ErrorReportData& error) {
     builder.setErrorMessage(error.error_message);
 
     auto words = capnp::messageToFlatArray(msg);
-    impl_->send_frame(Method::ReportUpstreamError, words);
-    impl_->recv_frame();
+    return parse_ack(impl_->exchange(Method::ReportUpstreamError, words), 0x84);
+}
+
+bool CapnpDispatchClient::is_connected() {
+    std::lock_guard<photon::mutex> guard(impl_->mutex);
+    return impl_->ensure_connected();
 }
 
 }  // namespace gateway::dispatch

@@ -12,6 +12,8 @@
 #include <photon/net/http/server.h>
 #include <photon/net/http/message.h>
 #include <photon/thread/thread.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 namespace gateway::server {
 
@@ -40,10 +42,53 @@ static std::string_view verb_to_sv(photon::net::http::Verb v) {
     }
 }
 
+static std::string peer_ip(photon::net::http::Request& req) {
+    auto* stream = req.get_socket_stream();
+    if (!stream) return "";
+    auto peer = stream->getpeername();
+    char buffer[INET6_ADDRSTRLEN]{};
+    if (peer.addr.is_ipv4()) {
+        in_addr address{peer.addr.to_nl()};
+        if (::inet_ntop(AF_INET, &address, buffer, sizeof(buffer))) return buffer;
+    } else if (::inet_ntop(AF_INET6, &peer.addr.addr, buffer, sizeof(buffer))) {
+        return buffer;
+    }
+    return "";
+}
+
+static bool ipv4_in_cidrs(std::string_view ip, std::string_view cidrs) {
+    in_addr peer{};
+    std::string ip_string(ip);
+    if (::inet_pton(AF_INET, ip_string.c_str(), &peer) != 1) return false;
+    auto peer_host = ntohl(peer.s_addr);
+    size_t start = 0;
+    while (start < cidrs.size()) {
+        auto end = cidrs.find(',', start);
+        if (end == std::string_view::npos) end = cidrs.size();
+        auto entry = cidrs.substr(start, end - start);
+        while (!entry.empty() && entry.front() == ' ') entry.remove_prefix(1);
+        while (!entry.empty() && entry.back() == ' ') entry.remove_suffix(1);
+        auto slash = entry.find('/');
+        auto address_text = entry.substr(0, slash);
+        int prefix = slash == std::string_view::npos ? 32
+            : std::atoi(std::string(entry.substr(slash + 1)).c_str());
+        in_addr network{};
+        std::string network_string(address_text);
+        if (prefix >= 0 && prefix <= 32
+            && ::inet_pton(AF_INET, network_string.c_str(), &network) == 1) {
+            uint32_t mask = prefix == 0 ? 0 : 0xffffffffu << (32 - prefix);
+            if ((peer_host & mask) == (ntohl(network.s_addr) & mask)) return true;
+        }
+        start = end + 1;
+    }
+    return false;
+}
+
 static int http_handler(void* self, photon::net::http::Request& req,
                         photon::net::http::Response& resp,
                         std::string_view) {
     auto* ctx = static_cast<HandlerContext*>(self);
+    if (auto* stream = req.get_socket_stream()) stream->timeout(30'000'000);
 
     auto target = req.target();
     auto path = target.substr(0, target.find('?'));
@@ -53,49 +98,26 @@ static int http_handler(void* self, photon::net::http::Request& req,
     auto upgrade_hdr = req.headers["Upgrade"];
     auto connection_hdr = req.headers["Connection"];
     if (is_websocket_upgrade(upgrade_hdr, connection_hdr)) {
-        auto ws_key = req.headers["Sec-WebSocket-Key"];
-        auto accept = compute_websocket_accept(ws_key);
-
-        resp.set_result(101);
-        resp.headers.insert("Upgrade", "websocket");
-        resp.headers.insert("Connection", "Upgrade");
-        resp.headers.insert("Sec-WebSocket-Accept", accept);
-        resp.send();
-
-        LOG_INFO("WebSocket upgrade accepted for path {}", path);
-
-        uint8_t buf[65536];
-        for (;;) {
-            ssize_t n = req.read(buf, sizeof(buf));
-            if (n <= 0) break;
-
-            WsFrame frame;
-            size_t consumed = 0;
-            if (!parse_ws_frame(buf, static_cast<size_t>(n), frame, consumed))
-                break;
-
-            if (frame.opcode == 0x8) {
-                auto close_frame = encode_ws_frame(0x8, "");
-                resp.write(close_frame.data(), close_frame.size());
-                break;
-            }
-
-            if (frame.opcode == 0x9) {
-                auto pong = encode_ws_frame(0xA, frame.payload);
-                resp.write(pong.data(), pong.size());
-                continue;
-            }
-
-            auto reply = encode_ws_frame(frame.opcode, frame.payload);
-            resp.write(reply.data(), reply.size());
-        }
+        resp.set_result(501);
+        resp.headers.insert("Content-Type", "application/json");
+        constexpr std::string_view message =
+            R"({"error":{"type":"unsupported_endpoint","message":"WebSocket forwarding is not supported"}})";
+        resp.headers.content_length(message.size());
+        resp.write(message.data(), message.size());
         return 0;
     }
 
     std::string body;
     auto content_length = req.headers["Content-Length"];
     if (!content_length.empty()) {
-        size_t len = std::stoul(std::string(content_length));
+        size_t len = 0;
+        try {
+            len = std::stoull(std::string(content_length));
+        } catch (...) {
+            resp.set_result(400);
+            resp.send();
+            return 0;
+        }
         if (len > ctx->config.max_body_size) {
             resp.set_result(413);
             resp.headers.insert("Content-Type", "application/json");
@@ -112,16 +134,29 @@ static int http_handler(void* self, photon::net::http::Request& req,
             total += n;
         }
         body.resize(total);
+    } else if (!req.headers["Transfer-Encoding"].empty()) {
+        char buffer[64 * 1024];
+        for (;;) {
+            auto n = req.read(buffer, sizeof(buffer));
+            if (n <= 0) break;
+            if (body.size() + static_cast<size_t>(n) > ctx->config.max_body_size) {
+                resp.set_result(413);
+                resp.send();
+                return 0;
+            }
+            body.append(buffer, static_cast<size_t>(n));
+        }
     }
 
-    std::string client_ip;
+    std::string client_ip = peer_ip(req);
+    bool trusted_proxy = ipv4_in_cidrs(client_ip, ctx->config.trusted_proxy_cidrs);
     auto xff = req.headers["X-Forwarded-For"];
-    if (!xff.empty()) {
+    if (trusted_proxy && !xff.empty()) {
         auto comma = xff.find(',');
         client_ip = xff.substr(0, comma);
         while (!client_ip.empty() && client_ip.back() == ' ')
             client_ip.pop_back();
-    } else {
+    } else if (trusted_proxy) {
         auto real_ip = req.headers["X-Real-IP"];
         if (!real_ip.empty()) client_ip = std::string(real_ip);
     }
@@ -180,17 +215,19 @@ std::unique_ptr<HttpServer> HttpServer::create(
     srv->impl_->ctx.config = config;
     srv->impl_->ctx.router = Router::create(garnet, dispatch, auth_cache, collector);
 
-    if (config.core_id != 0) {
-        LOG_INFO("HTTP server: core {} skipping bind (core 0 owns port {})",
-                 config.core_id, config.port);
-        return srv;
-    }
-
     auto* impl = srv->impl_.get();
 
     impl->sock_server = photon::net::new_tcp_socket_server();
     if (!impl->sock_server) {
         LOG_ERROR("Failed to create TCP socket server");
+        return srv;
+    }
+
+    if (impl->sock_server->setsockopt<int>(SOL_SOCKET, SO_REUSEPORT, 1) != 0
+        || impl->sock_server->setsockopt<int>(SOL_SOCKET, SO_REUSEADDR, 1) != 0) {
+        LOG_ERROR("Failed to enable SO_REUSEPORT on core {}", config.core_id);
+        delete impl->sock_server;
+        impl->sock_server = nullptr;
         return srv;
     }
 

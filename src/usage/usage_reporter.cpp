@@ -2,6 +2,7 @@
 #include "usage/usage_collector.h"
 #include "dispatch/capnp_dispatch_client.h"
 #include "platform/logging.h"
+#include "platform/metrics.h"
 
 #include <photon/thread/thread.h>
 
@@ -26,7 +27,7 @@ std::unique_ptr<UsageReporter> UsageReporter::create(
 }
 
 UsageReporter::~UsageReporter() {
-    stop();
+    if (impl_) stop();
 }
 
 void UsageReporter::run_loop() {
@@ -37,7 +38,7 @@ void UsageReporter::run_loop() {
         photon::thread_sleep(kFlushIntervalSec);
         if (!impl_->running.load()) break;
 
-        auto events = impl_->collector->drain();
+        auto events = impl_->collector->peek();
         if (events.empty()) continue;
 
         LOG_DEBUG("Flushing {} usage events", events.size());
@@ -59,7 +60,19 @@ void UsageReporter::run_loop() {
             report.first_token_ms = ev.first_token_ms;
             report.stream = ev.stream;
             report.client_disconnect = ev.client_disconnect;
-            impl_->dispatch->report_usage(report);
+            report.status_code = ev.status_code;
+            auto ack = impl_->dispatch->report_usage(report);
+            if (ack.acknowledged()) {
+                impl_->collector->acknowledge(report.lease_token);
+                platform::global_metrics().usage_events_buffered.fetch_sub(
+                    1, std::memory_order_relaxed);
+                continue;
+            }
+            platform::global_metrics().usage_report_failures.fetch_add(
+                1, std::memory_order_relaxed);
+            LOG_WARN("Usage report retained for retry: lease={} error={} retryable={}",
+                     report.lease_token, ack.error_code, ack.retryable);
+            break;
         }
     }
 
@@ -67,7 +80,7 @@ void UsageReporter::run_loop() {
 }
 
 void UsageReporter::stop() {
-    impl_->running.store(false);
+    if (impl_) impl_->running.store(false);
 }
 
 }  // namespace gateway::usage

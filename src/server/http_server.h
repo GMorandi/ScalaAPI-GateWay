@@ -15,6 +15,7 @@ struct HttpServerConfig {
     uint16_t port = 8080;
     int core_id = 0;
     size_t max_body_size = 32 * 1024 * 1024;
+    std::string trusted_proxy_cidrs;
 };
 
 class HttpServer {

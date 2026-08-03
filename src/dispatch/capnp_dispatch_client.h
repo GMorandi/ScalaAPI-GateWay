@@ -26,6 +26,7 @@ struct DispatchRequest {
     int64_t cached_auth_version = 0;
     int endpoint = 0;
     std::string metadata_user_id;
+    bool stream = false;
 };
 
 struct UpstreamTarget {
@@ -47,6 +48,7 @@ struct DispatchResult {
     enum class Outcome { Ok, Wait, Rejected, Reauth };
     Outcome outcome = Outcome::Rejected;
     int64_t auth_version = 0;
+    int64_t api_key_id = 0;
     std::string lease_token;
     UpstreamTarget upstream;
     std::string reject_message;
@@ -71,6 +73,16 @@ struct UsageReportData {
     int first_token_ms = 0;
     bool stream = false;
     bool client_disconnect = false;
+    int status_code = 0;
+};
+
+struct RpcAck {
+    bool accepted = false;
+    bool duplicate = false;
+    bool retryable = false;
+    std::string error_code;
+
+    bool acknowledged() const { return accepted || duplicate; }
 };
 
 struct ErrorReportData {
@@ -87,9 +99,10 @@ public:
     ~CapnpDispatchClient();
 
     DispatchResult dispatch(const DispatchRequest& req);
-    void report_usage(const UsageReportData& report);
-    void abort(const std::string& lease_token, const std::string& reason);
-    void report_upstream_error(const ErrorReportData& error);
+    RpcAck report_usage(const UsageReportData& report);
+    RpcAck abort(const std::string& lease_token, const std::string& reason);
+    RpcAck report_upstream_error(const ErrorReportData& error);
+    bool is_connected();
 
 private:
     struct Impl;

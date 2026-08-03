@@ -12,6 +12,7 @@ namespace gateway::server {
 
 struct Router::Impl {
     cache::GarnetClient* garnet;
+    dispatch::CapnpDispatchClient* dispatch;
     auth::SpeculativeCache* auth_cache;
     usage::UsageCollector* collector;
     std::unique_ptr<GatewayHandler> gateway;
@@ -26,6 +27,7 @@ std::unique_ptr<Router> Router::create(
     auto r = std::make_unique<Router>();
     r->impl_ = std::make_unique<Impl>();
     r->impl_->garnet = &garnet;
+    r->impl_->dispatch = &dispatch;
     r->impl_->auth_cache = &auth_cache;
     r->impl_->collector = &collector;
     r->impl_->gateway = std::make_unique<GatewayHandler>(
@@ -51,11 +53,15 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
     }
 
     if (path == "/v1/embeddings" || path == "/embeddings") {
-        return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::Embeddings);
+        resp.status_code = 501;
+        resp.body = R"({"error":{"type":"unsupported_endpoint","message":"Embeddings are not supported"}})";
+        return 0;
     }
 
     if (path == "/v1/images/generations" || path == "/images/generations") {
-        return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::Images);
+        resp.status_code = 501;
+        resp.body = R"({"error":{"type":"unsupported_endpoint","message":"Image generation is not supported"}})";
+        return 0;
     }
 
     if (path == "/v1/messages/count_tokens" || path == "/messages/count_tokens") {
@@ -66,8 +72,28 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
         return handle_models(req, resp);
     }
 
-    if (path.starts_with("/v1beta/")) {
+    if (path.starts_with("/v1beta/")
+        && (path.find(":generateContent") != std::string_view::npos
+            || path.find(":streamGenerateContent") != std::string_view::npos)) {
         return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::Gemini);
+    }
+    if (path.starts_with("/v1beta/")) {
+        resp.status_code = 501;
+        resp.body = R"({"error":{"code":501,"message":"This Gemini endpoint is not supported","status":"UNIMPLEMENTED"}})";
+        return 0;
+    }
+
+    if (path == "/live") {
+        resp.status_code = 200;
+        resp.body = R"({"status":"live"})";
+        return 0;
+    }
+
+    if (path == "/ready") {
+        bool ready = impl_->dispatch->is_connected();
+        resp.status_code = ready ? 200 : 503;
+        resp.body = ready ? R"({"status":"ready"})" : R"({"status":"not_ready"})";
+        return 0;
     }
 
     if (path == "/metrics") {
@@ -100,12 +126,22 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
             "gateway_failovers {}\n"
             "# HELP gateway_active_connections Active connections\n"
             "# TYPE gateway_active_connections gauge\n"
-            "gateway_active_connections {}\n",
+            "gateway_active_connections {}\n"
+            "# HELP gateway_usage_outbox_backlog Pending durable usage events\n"
+            "# TYPE gateway_usage_outbox_backlog gauge\n"
+            "gateway_usage_outbox_backlog {}\n"
+            "# HELP gateway_usage_report_failures_total Failed usage report attempts\n"
+            "# TYPE gateway_usage_report_failures_total counter\n"
+            "gateway_usage_report_failures_total {}\n"
+            "# HELP gateway_dispatch_reconnects_total Successful dispatch reconnects\n"
+            "# TYPE gateway_dispatch_reconnects_total counter\n"
+            "gateway_dispatch_reconnects_total {}\n",
             m.requests_total.load(), m.requests_streaming.load(),
             m.requests_failed.load(), m.dispatch_calls.load(),
             m.garnet_hits.load(), m.garnet_misses.load(),
             m.upstream_errors.load(), m.failovers.load(),
-            m.active_connections.load());
+            m.active_connections.load(), m.usage_events_buffered.load(),
+            m.usage_report_failures.load(), m.dispatch_reconnects.load());
         return 0;
     }
 

@@ -4,9 +4,16 @@ using Types = import "types.capnp";
 
 interface GatewayDispatch {
   dispatch @0 (request: DispatchRequest) -> (response: DispatchResponse);
-  reportUsage @1 (report: Types.UsageReport) -> ();
-  abort @2 (leaseToken: Text, reason: Text) -> ();
-  reportUpstreamError @3 (report: Types.ErrorReport) -> ();
+  reportUsage @1 (report: Types.UsageReport) -> (ack: WriteAck);
+  abort @2 (leaseToken: Text, reason: Text) -> (ack: WriteAck);
+  reportUpstreamError @3 (report: Types.ErrorReport) -> (ack: WriteAck);
+}
+
+struct WriteAck {
+  accepted @0 :Bool;
+  duplicate @1 :Bool;
+  retryable @2 :Bool;
+  errorCode @3 :Text;
 }
 
 struct DispatchRequest {
@@ -19,6 +26,8 @@ struct DispatchRequest {
   cachedAuthVersion @6 :Int64;
   endpoint @7 :EndpointKind;
   metadataUserId @8 :Text;
+  protocolVersion @9 :UInt16;
+  stream @10 :Bool;
 
   enum EndpointKind {
     messages @0;
@@ -38,6 +47,7 @@ struct DispatchResponse {
   waitPlan @4 :WaitPlan;
   reject @5 :RejectInfo;
   leaseToken @6 :Text;
+  protocolVersion @7 :UInt16;
 
   enum Outcome {
     ok @0;

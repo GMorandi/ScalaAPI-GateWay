@@ -65,6 +65,21 @@ TEST_F(RouterTest, GeminiRoute) {
     EXPECT_NE(resp.status_code, 404);
 }
 
+TEST_F(RouterTest, EmbeddingsReturnNotImplemented) {
+    auto resp = request("POST", "/v1/embeddings", "{}", "Bearer key");
+    EXPECT_EQ(resp.status_code, 501);
+}
+
+TEST_F(RouterTest, ImagesReturnNotImplemented) {
+    auto resp = request("POST", "/v1/images/generations", "{}", "Bearer key");
+    EXPECT_EQ(resp.status_code, 501);
+}
+
+TEST_F(RouterTest, LiveDoesNotDependOnPlatform) {
+    auto resp = request("GET", "/live");
+    EXPECT_EQ(resp.status_code, 200);
+}
+
 TEST_F(RouterTest, UnknownRoute404) {
     auto resp = request("GET", "/unknown/path");
     EXPECT_EQ(resp.status_code, 404);

@@ -15,6 +15,8 @@ struct CoreRuntimeConfig {
     uint16_t listen_port = 8080;
     std::string garnet_uds_path;
     std::string capnp_uds_path;
+    std::string usage_db_path;
+    std::string trusted_proxy_cidrs;
 };
 
 class CoreRuntime {

@@ -7,6 +7,12 @@ FailoverController::FailoverController(int max_switches, int max_same_retries)
 
 FailoverController::Action FailoverController::handle_error(
     int64_t account_id, int status_code) {
+    if (status_code == 401 || status_code == 403 || status_code == 429) {
+        mark_failed(account_id);
+        ++switch_count_;
+        return switch_count_ > max_switches_ ? Action::Exhausted : Action::SwitchAccount;
+    }
+
     auto& retries = same_account_retries_[account_id];
     ++retries;
 

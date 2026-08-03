@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include "usage/usage_collector.h"
+#include <filesystem>
+#include <unistd.h>
 
 using namespace gateway::usage;
 
@@ -60,19 +62,18 @@ TEST(UsageCollector, RecordAfterDrain) {
     EXPECT_EQ(events[0].api_key_id, 2);
 }
 
-TEST(UsageCollector, OverflowOverwritesOldest) {
+TEST(UsageCollector, DoesNotDropEventsUnderBurst) {
     UsageCollector collector;
     // Fill beyond capacity (4096)
     for (int i = 0; i < 4100; ++i) {
         collector.record(make_event(i));
     }
-    EXPECT_EQ(collector.pending(), 4096u);
+    EXPECT_EQ(collector.pending(), 4100u);
 
     auto events = collector.drain();
-    ASSERT_EQ(events.size(), 4096u);
-    // Oldest 4 events (0-3) were overwritten, first should be 4
-    EXPECT_EQ(events[0].api_key_id, 4);
-    EXPECT_EQ(events[4095].api_key_id, 4099);
+    ASSERT_EQ(events.size(), 4100u);
+    EXPECT_EQ(events[0].api_key_id, 0);
+    EXPECT_EQ(events[4099].api_key_id, 4099);
 }
 
 TEST(UsageCollector, EventFieldsPreserved) {
@@ -125,4 +126,27 @@ TEST(UsageCollector, MultipleDrainCycles) {
         EXPECT_EQ(events[0].api_key_id, cycle * 100);
     }
     EXPECT_EQ(collector.pending(), 0u);
+}
+
+TEST(UsageCollector, DurableOutboxSurvivesReopenUntilAcknowledged) {
+    auto path = "/tmp/gateway-usage-" + std::to_string(::getpid()) + ".db";
+    std::filesystem::remove(path);
+    {
+        UsageCollector collector(path);
+        auto event = make_event(77);
+        event.lease_token = "lease-77";
+        collector.record(std::move(event));
+        EXPECT_EQ(collector.pending(), 1u);
+    }
+    {
+        UsageCollector collector(path);
+        auto events = collector.peek();
+        ASSERT_EQ(events.size(), 1u);
+        EXPECT_EQ(events[0].request_id, "req-77");
+        collector.acknowledge("lease-77");
+        EXPECT_EQ(collector.pending(), 0u);
+    }
+    std::filesystem::remove(path);
+    std::filesystem::remove(path + "-wal");
+    std::filesystem::remove(path + "-shm");
 }

@@ -1,14 +1,28 @@
 #include "server/gateway_handler.h"
 #include "platform/logging.h"
 #include "platform/metrics.h"
+#include "forwarder/retry_policy.h"
 
 #include <photon/thread/thread.h>
 #include <xxhash.h>
 
 #include <chrono>
 #include <format>
+#include <rapidjson/document.h>
 
 namespace gateway::server {
+
+namespace {
+int64_t parse_auth_version(std::string_view json) {
+    rapidjson::Document doc;
+    doc.Parse(json.data(), json.size());
+    if (doc.HasParseError() || !doc.IsObject() || !doc.HasMember("version")) return 0;
+    const auto& value = doc["version"];
+    if (value.IsInt64()) return value.GetInt64();
+    if (value.IsUint64()) return static_cast<int64_t>(value.GetUint64());
+    return 0;
+}
+}
 
 GatewayHandler::GatewayHandler(cache::GarnetClient& garnet,
                                dispatch::CapnpDispatchClient& dispatch,
@@ -53,7 +67,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         auto garnet_resp = garnet_.get(garnet_key);
         if (garnet_resp.found) {
             metrics.garnet_hits.fetch_add(1, std::memory_order_relaxed);
-            cached_version = 1;
+            cached_version = parse_auth_version(garnet_resp.value);
         } else {
             metrics.garnet_misses.fetch_add(1, std::memory_order_relaxed);
         }
@@ -77,14 +91,25 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
     }
 
     auto parsed = protocol::Converter::parse(req.body, inbound_format);
-    bool is_stream = parsed.stream;
+    if (endpoint == dispatch::DispatchRequest::EndpointKind::Gemini && parsed.model.empty()) {
+        auto marker = req.path.find("/models/");
+        if (marker != std::string_view::npos) {
+            auto start = marker + 8;
+            auto end = req.path.find(':', start);
+            parsed.model = std::string(req.path.substr(start, end - start));
+        }
+    }
+    bool is_stream = parsed.stream
+        || (endpoint == dispatch::DispatchRequest::EndpointKind::Gemini
+            && req.path.find(":streamGenerateContent") != std::string_view::npos);
 
     if (is_stream) {
         metrics.requests_streaming.fetch_add(1, std::memory_order_relaxed);
     }
 
     // --- Step 4: Compute session hash for sticky scheduling ---
-    auto session_hash = compute_session_hash(req.body, parsed.model);
+    auto session_hash = compute_session_hash(
+        key_hash, parsed.metadata_user_id, req.body, parsed.model);
 
     // --- Step 5+6+7: Dispatch, forward, and failover loop ---
     dispatch::DispatchRequest dispatch_req{
@@ -97,12 +122,17 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         .cached_auth_version = cached_version,
         .endpoint = static_cast<int>(endpoint),
         .metadata_user_id = parsed.metadata_user_id,
+        .stream = is_stream,
     };
 
     forwarder::FailoverController failover;
+    forwarder::RetryPolicy retry_policy;
     forwarder::ForwardResult forward_result;
     dispatch::DispatchResult dispatch_result;
 
+    auto dispatch_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+    int dispatch_waits = 0;
+    bool terminal_abort = false;
     while (true) {
         // Dispatch
         while (true) {
@@ -123,14 +153,32 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 break;
             }
             if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Rejected) {
-                resp.status_code = 429;
+                resp.status_code = dispatch_result.reject_code <= 1 ? 401
+                    : dispatch_result.reject_code == 2 ? 402
+                    : dispatch_result.reject_code == 3 || dispatch_result.reject_code == 5
+                        || dispatch_result.reject_code == 7 ? 429
+                    : 503;
+                resp.body = std::format(
+                    R"({{"error":{{"type":"dispatch_rejected","message":"{}"}}}})",
+                    dispatch_result.reject_message);
                 metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
                 metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
                 return 0;
             }
             if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Wait) {
+                if (++dispatch_waits > 8 || std::chrono::steady_clock::now() >= dispatch_deadline) {
+                    resp.status_code = 503;
+                    resp.body = R"({"error":{"type":"dispatch_timeout","message":"No upstream account became available before the deadline"}})";
+                    metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                    metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+                    return 0;
+                }
+                auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    dispatch_deadline - std::chrono::steady_clock::now()).count();
+                auto wait_ms = std::min<int64_t>(
+                    std::max(dispatch_result.wait_timeout_ms, 1), std::min<int64_t>(1000, remaining));
                 photon::thread_usleep(
-                    static_cast<uint64_t>(dispatch_result.wait_timeout_ms) * 1000);
+                    static_cast<uint64_t>(wait_ms) * 1000);
                 continue;
             }
         }
@@ -143,6 +191,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             upstream_format = protocol::Format::Anthropic;
         else if (target.platform == "gemini" || target.platform == "google")
             upstream_format = protocol::Format::Gemini;
+        else if (target.upstream_path == "/v1/responses")
+            upstream_format = protocol::Format::OpenAIResponses;
         else
             upstream_format = protocol::Format::OpenAIChatCompletions;
 
@@ -165,8 +215,11 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             target, upstream_body, is_stream, resp.stream_write, stream_mode);
 
         // Check if we need failover
-        if (forward_result.status_code >= 400 && forward_result.status_code != 400) {
-            auto action = failover.handle_error(target.account_id, forward_result.status_code);
+        if (forward_result.status_code >= 400) {
+            auto retryable = retry_policy.is_retryable_status(forward_result.status_code);
+            auto action = retryable
+                ? failover.handle_error(target.account_id, forward_result.status_code)
+                : forwarder::FailoverController::Action::Exhausted;
 
             dispatch::ErrorReportData err{
                 .account_id = target.account_id,
@@ -174,7 +227,12 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 .retry_after_ms = 0,
                 .request_id = request_id,
             };
-            dispatch_.report_upstream_error(err);
+            if (retryable) dispatch_.report_upstream_error(err);
+            auto abort_ack = dispatch_.abort(dispatch_result.lease_token, "upstream_failure");
+            if (!abort_ack.acknowledged()) {
+                LOG_ERROR("Abort failed for request {} lease {}: {}",
+                          request_id, dispatch_result.lease_token, abort_ack.error_code);
+            }
             metrics.upstream_errors.fetch_add(1, std::memory_order_relaxed);
 
             if (action == forwarder::FailoverController::Action::SwitchAccount ||
@@ -183,8 +241,11 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                     failover.failed_accounts().begin(),
                     failover.failed_accounts().end());
                 metrics.failovers.fetch_add(1, std::memory_order_relaxed);
+                photon::thread_usleep(
+                    static_cast<uint64_t>(retry_policy.compute_delay(failover.switch_count())) * 1000);
                 continue;
             }
+            terminal_abort = true;
         }
 
         break;
@@ -200,7 +261,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
     usage::UsageEvent event{
         .lease_token = dispatch_result.lease_token,
         .request_id = request_id,
-        .api_key_id = 0,
+        .api_key_id = dispatch_result.api_key_id,
         .user_id = upstream.user_id,
         .account_id = upstream.account_id,
         .group_id = upstream.group_id,
@@ -215,8 +276,41 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         .first_token_ms = forward_result.first_token_ms,
         .stream = is_stream,
         .client_disconnect = forward_result.client_disconnect,
+        .status_code = forward_result.status_code,
     };
-    collector_.record(std::move(event));
+    if (!terminal_abort) {
+        try {
+            collector_.record(event);
+            metrics.usage_events_buffered.fetch_add(1, std::memory_order_relaxed);
+        } catch (const std::exception& ex) {
+            LOG_ERROR("Durable usage outbox write failed for request {}: {}", request_id, ex.what());
+            dispatch::UsageReportData fallback{
+                .lease_token = event.lease_token,
+                .request_id = event.request_id,
+                .api_key_id = event.api_key_id,
+                .user_id = event.user_id,
+                .account_id = event.account_id,
+                .group_id = event.group_id,
+                .model = event.model,
+                .upstream_model = event.upstream_model,
+                .input_tokens = event.input_tokens,
+                .output_tokens = event.output_tokens,
+                .cache_create_tokens = event.cache_create_tokens,
+                .cache_read_tokens = event.cache_read_tokens,
+                .duration_ms = event.duration_ms,
+                .first_token_ms = event.first_token_ms,
+                .stream = event.stream,
+                .client_disconnect = event.client_disconnect,
+                .status_code = event.status_code,
+            };
+            auto ack = dispatch_.report_usage(fallback);
+            if (!ack.acknowledged()) {
+                metrics.usage_report_failures.fetch_add(1, std::memory_order_relaxed);
+                LOG_ERROR("Synchronous usage fallback failed for lease {}: {}",
+                          event.lease_token, ack.error_code);
+            }
+        }
+    }
 
     resp.status_code = forward_result.status_code > 0 ? forward_result.status_code : 200;
     metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
@@ -233,9 +327,23 @@ std::string GatewayHandler::extract_api_key(const HttpRequest& req) {
     return "";
 }
 
-std::string GatewayHandler::compute_session_hash(std::string_view body,
+std::string GatewayHandler::compute_session_hash(std::string_view key_hash,
+                                                  std::string_view metadata_user_id,
+                                                  std::string_view body,
                                                   std::string_view model) {
-    auto hash = XXH64(model.data(), model.size(), 0);
+    std::string context;
+    context.reserve(key_hash.size() + model.size() + metadata_user_id.size() + 4098);
+    context.append(key_hash);
+    context.push_back('\n');
+    context.append(model);
+    context.push_back('\n');
+    if (!metadata_user_id.empty()) {
+        context.append(metadata_user_id);
+    } else {
+        auto context_size = std::min<size_t>(body.size(), 4096);
+        context.append(body.data(), context_size);
+    }
+    auto hash = XXH64(context.data(), context.size(), 0);
     return std::format("{:016x}", hash);
 }
 

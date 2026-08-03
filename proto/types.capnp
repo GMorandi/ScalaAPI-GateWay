@@ -96,6 +96,8 @@ struct AccountProjection {
 
 struct UsageReport {
   leaseToken @0 :Text;
+  # Deprecated identity fields retained for v1 wire compatibility. The server
+  # resolves all of them from leaseToken and ignores client-provided values.
   requestId @1 :Text;
   apiKeyId @2 :Int64;
   userId @3 :Int64;
@@ -115,6 +117,7 @@ struct UsageReport {
   forceCacheBilling @17 :Bool;
   ipAddress @18 :Text;
   userAgent @19 :Text;
+  statusCode @20 :Int32;
 }
 
 struct ErrorReport {

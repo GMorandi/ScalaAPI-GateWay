@@ -28,7 +28,10 @@ public:
 
 private:
     std::string extract_api_key(const HttpRequest& req);
-    std::string compute_session_hash(std::string_view body, std::string_view model);
+    std::string compute_session_hash(std::string_view key_hash,
+                                     std::string_view metadata_user_id,
+                                     std::string_view body,
+                                     std::string_view model);
 
     cache::GarnetClient& garnet_;
     dispatch::CapnpDispatchClient& dispatch_;

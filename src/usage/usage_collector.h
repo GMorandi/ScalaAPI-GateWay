@@ -1,9 +1,9 @@
 #pragma once
 
-#include "dispatch/capnp_dispatch_client.h"
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
-#include <cstdint>
 
 namespace gateway::usage {
 
@@ -24,19 +24,24 @@ struct UsageEvent {
     int first_token_ms = 0;
     bool stream = false;
     bool client_disconnect = false;
+    int status_code = 0;
 };
 
 class UsageCollector {
 public:
+    explicit UsageCollector(std::string database_path = {});
+    ~UsageCollector();
+
     void record(UsageEvent event);
+    std::vector<UsageEvent> peek(size_t limit = 100);
+    void acknowledge(const std::string& lease_token);
     std::vector<UsageEvent> drain();
     size_t pending() const;
+    bool durable() const;
 
 private:
-    static constexpr size_t kRingBufferSize = 4096;
-    UsageEvent ring_buffer_[kRingBufferSize];
-    size_t write_pos_ = 0;
-    size_t count_ = 0;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace gateway::usage

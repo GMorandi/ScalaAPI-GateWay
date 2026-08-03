@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(sub2api-gateway VERSION 1.0.0 LANGUAGES CXX)
 
+find_library(SQLITE3_LIBRARY NAMES sqlite3 libsqlite3.so.0 REQUIRED)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
@@ -85,6 +87,7 @@ target_link_libraries(gateway_core PUBLIC
     xxhash
     OpenSSL::SSL
     OpenSSL::Crypto
+    ${SQLITE3_LIBRARY}
 )
 
 # --- Main executable ---

@@ -4,23 +4,51 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <photon/thread/thread.h>
 
 #include <cstring>
 #include <format>
+#include <mutex>
 
 namespace gateway::cache {
 
 struct GarnetClient::Impl {
     std::string uds_path;
     int fd = -1;
+    photon::mutex mutex;
     std::string accum;
     char read_buf[64 * 1024];
 
-    bool send_command(std::string_view cmd) {
+    void disconnect() {
+        if (fd >= 0) ::close(fd);
+        fd = -1;
+        accum.clear();
+    }
+
+    bool ensure_connected() {
+        if (fd >= 0) return true;
+        fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0) return false;
+
+        struct sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::strncpy(addr.sun_path, uds_path.c_str(), sizeof(addr.sun_path) - 1);
+        if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
+            disconnect();
+            return false;
+        }
+        timeval timeout{3, 0};
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        LOG_INFO("Connected to Garnet at {}", uds_path);
+        return true;
+    }
+
+    bool send_command(std::string_view cmd) {
+        if (!ensure_connected()) return false;
         size_t total = 0;
         while (total < cmd.size()) {
-            ssize_t n = ::write(fd, cmd.data() + total, cmd.size() - total);
+            ssize_t n = ::send(fd, cmd.data() + total, cmd.size() - total, MSG_NOSIGNAL);
             if (n <= 0) return false;
             total += n;
         }
@@ -71,6 +99,18 @@ struct GarnetClient::Impl {
         accum.erase(0, crlf + 2);
         return result;
     }
+
+    std::string execute(std::string_view command) {
+        std::lock_guard<photon::mutex> guard(mutex);
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            if (send_command(command)) {
+                auto response = read_response();
+                if (!response.empty()) return response;
+            }
+            disconnect();
+        }
+        return {};
+    }
 };
 
 std::unique_ptr<GarnetClient> GarnetClient::connect(const std::string& uds_path) {
@@ -78,24 +118,9 @@ std::unique_ptr<GarnetClient> GarnetClient::connect(const std::string& uds_path)
     client->impl_ = std::make_unique<Impl>();
     client->impl_->uds_path = uds_path;
 
-    int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        LOG_ERROR("Failed to create unix socket for Garnet");
-        return client;
-    }
-
-    struct sockaddr_un addr{};
-    addr.sun_family = AF_UNIX;
-    std::strncpy(addr.sun_path, uds_path.c_str(), sizeof(addr.sun_path) - 1);
-
-    if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (!client->impl_->ensure_connected()) {
         LOG_ERROR("Failed to connect to Garnet at {}", uds_path);
-        ::close(fd);
-        return client;
     }
-
-    client->impl_->fd = fd;
-    LOG_INFO("Connected to Garnet at {}", uds_path);
     return client;
 }
 
@@ -108,11 +133,7 @@ GarnetClient::~GarnetClient() {
 GarnetResponse GarnetClient::get(std::string_view key) {
     auto cmd = std::format("*2\r\n$3\r\nGET\r\n${}\r\n{}\r\n",
                            key.size(), key);
-    if (!impl_->send_command(cmd)) {
-        return {};
-    }
-
-    auto raw = impl_->read_response();
+    auto raw = impl_->execute(cmd);
     if (raw.empty()) return {};
 
     if (raw[0] == '$') {
@@ -138,8 +159,7 @@ std::vector<GarnetResponse> GarnetClient::mget(std::vector<std::string_view> key
 }
 
 bool GarnetClient::ping() {
-    if (!impl_->send_command("*1\r\n$4\r\nPING\r\n")) return false;
-    auto resp = impl_->read_response();
+    auto resp = impl_->execute("*1\r\n$4\r\nPING\r\n");
     return resp.starts_with("+PONG");
 }
 

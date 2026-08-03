@@ -111,3 +111,15 @@ TEST(FailoverController, FailedAccountsAccumulate) {
     EXPECT_TRUE(failed.count(2));
     EXPECT_EQ(ctrl.switch_count(), 2);
 }
+
+TEST(FailoverController, AuthenticationFailureSwitchesImmediately) {
+    FailoverController ctrl(3, 3);
+    EXPECT_EQ(ctrl.handle_error(11, 401), FailoverController::Action::SwitchAccount);
+    EXPECT_TRUE(ctrl.failed_accounts().contains(11));
+}
+
+TEST(FailoverController, RateLimitSwitchesImmediately) {
+    FailoverController ctrl(3, 3);
+    EXPECT_EQ(ctrl.handle_error(12, 429), FailoverController::Action::SwitchAccount);
+    EXPECT_TRUE(ctrl.failed_accounts().contains(12));
+}
