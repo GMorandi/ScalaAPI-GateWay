@@ -1,6 +1,7 @@
 #include "server/http_server.h"
 #include "server/router.h"
 #include "server/websocket.h"
+#include "server/capability_registry.h"
 #include "cache/garnet_client.h"
 #include "dispatch/capnp_dispatch_client.h"
 #include "auth/speculative_cache.h"
@@ -11,9 +12,11 @@
 #include <photon/net/socket.h>
 #include <photon/net/http/server.h>
 #include <photon/net/http/message.h>
+#include <photon/net/http/websocket.h>
 #include <photon/thread/thread.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <cstring>
 
 namespace gateway::server {
 
@@ -92,18 +95,53 @@ static int http_handler(void* self, photon::net::http::Request& req,
 
     auto target = req.target();
     auto path = target.substr(0, target.find('?'));
+    auto query = target.substr(path.size());
     auto auth_hdr = req.headers["Authorization"];
     auto api_key_hdr = req.headers["X-Api-Key"];
 
     auto upgrade_hdr = req.headers["Upgrade"];
     auto connection_hdr = req.headers["Connection"];
     if (is_websocket_upgrade(upgrade_hdr, connection_hdr)) {
-        resp.set_result(501);
-        resp.headers.insert("Content-Type", "application/json");
-        constexpr std::string_view message =
-            R"({"error":{"type":"unsupported_endpoint","message":"WebSocket forwarding is not supported"}})";
-        resp.headers.content_length(message.size());
-        resp.write(message.data(), message.size());
+        auto capability = match_capability("GET", path);
+        if (!capability.spec || !capability.spec->realtime) {
+            resp.set_result(404);
+            constexpr std::string_view message =
+                R"({"error":{"type":"not_found_error","message":"Unknown or unsupported WebSocket endpoint"}})";
+            resp.headers.insert("Content-Type", "application/json");
+            resp.headers.content_length(message.size());
+            resp.write(message.data(), message.size());
+            return 0;
+        }
+        const bool bearer_auth = auth_hdr.starts_with("Bearer ") && auth_hdr.size() > 7;
+        if (!bearer_auth && api_key_hdr.empty()) {
+            resp.set_result(401);
+            constexpr std::string_view message =
+                R"({"error":{"type":"authentication_error","message":"Missing API key"}})";
+            resp.headers.insert("Content-Type", "application/json");
+            resp.headers.content_length(message.size());
+            resp.write(message.data(), message.size());
+            return 0;
+        }
+        auto* websocket = photon::net::http::server_accept_websocket(req, resp);
+        if (!websocket) return 0;
+        std::vector<std::pair<std::string, std::string>> ws_headers;
+        for (auto header : req.headers) {
+            if (header.first == "Accept" || header.first == "User-Agent"
+                || header.first == "X-Request-ID" || header.first == "Idempotency-Key")
+                ws_headers.emplace_back(header.first, header.second);
+        }
+        HttpRequest ws_req{
+            .method = "GET", .path = path,
+            .query = target.substr(path.size()),
+            .authorization = auth_hdr, .x_api_key = api_key_hdr,
+            .client_ip = peer_ip(req), .accept = req.headers["Accept"],
+            .user_agent = req.headers["User-Agent"],
+            .request_id = req.headers["X-Request-ID"],
+            .idempotency_key = req.headers["Idempotency-Key"],
+            .headers = std::move(ws_headers),
+        };
+        ctx->router->handle_websocket(ws_req, *websocket);
+        delete websocket;
         return 0;
     }
 
@@ -161,13 +199,29 @@ static int http_handler(void* self, photon::net::http::Request& req,
         if (!real_ip.empty()) client_ip = std::string(real_ip);
     }
 
+    std::vector<std::pair<std::string, std::string>> forwarded_headers;
+    for (auto header : req.headers) {
+        auto key = header.first;
+        if (key == "Accept" || key == "User-Agent" || key == "X-Request-ID"
+            || key == "Idempotency-Key") {
+            forwarded_headers.emplace_back(key, header.second);
+        }
+    }
+
     HttpRequest gw_req{
         .method = verb_to_sv(req.verb()),
         .path = path,
+        .query = query,
         .body = body,
         .authorization = auth_hdr,
         .x_api_key = api_key_hdr,
         .client_ip = client_ip,
+        .content_type = req.headers["Content-Type"],
+        .accept = req.headers["Accept"],
+        .user_agent = req.headers["User-Agent"],
+        .request_id = req.headers["X-Request-ID"],
+        .idempotency_key = req.headers["Idempotency-Key"],
+        .headers = std::move(forwarded_headers),
     };
 
     HttpResponse gw_resp;
@@ -176,10 +230,15 @@ static int http_handler(void* self, photon::net::http::Request& req,
     gw_resp.stream_write = [&](const char* data, size_t len) -> ssize_t {
         if (!headers_sent) {
             headers_sent = true;
-            resp.set_result(200);
-            resp.headers.insert("Content-Type", "text/event-stream");
-            resp.headers.insert("Cache-Control", "no-cache");
-            resp.headers.insert("Connection", "keep-alive");
+            resp.set_result(gw_resp.status_code);
+            for (const auto& [key, value] : gw_resp.headers) {
+                if (key != "Content-Type") resp.headers.insert(key, value);
+            }
+            resp.headers.insert("Content-Type", gw_resp.content_type.empty() ? "text/event-stream" : gw_resp.content_type);
+            if (gw_resp.content_type.empty() || gw_resp.content_type.starts_with("text/event-stream")) {
+                resp.headers.insert("Cache-Control", "no-cache");
+                resp.headers.insert("Connection", "keep-alive");
+            }
         }
         return resp.write(data, len);
     };
@@ -191,7 +250,10 @@ static int http_handler(void* self, photon::net::http::Request& req,
     }
 
     resp.set_result(gw_resp.status_code);
-    resp.headers.insert("Content-Type", "application/json");
+    for (const auto& [key, value] : gw_resp.headers) {
+        if (key != "Content-Type") resp.headers.insert(key, value);
+    }
+    resp.headers.insert("Content-Type", gw_resp.content_type.empty() ? "application/json" : gw_resp.content_type);
     resp.headers.content_length(gw_resp.body.size());
 
     if (!gw_resp.body.empty()) {

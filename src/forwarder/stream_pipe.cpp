@@ -7,6 +7,10 @@
 
 #include <chrono>
 #include <cstring>
+#include <algorithm>
+#include <rapidjson/document.h>
+#include <rapidjson/writer.h>
+#include <rapidjson/stringbuffer.h>
 
 namespace gateway::forwarder {
 
@@ -15,8 +19,9 @@ static uint64_t now_ms() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-StreamPipe::StreamPipe(const StreamPipeConfig& config, ProtocolMode mode)
-    : config_(config), mode_(mode) {
+StreamPipe::StreamPipe(const StreamPipeConfig& config, ProtocolMode mode,
+                       protocol::Format source, protocol::Format target)
+    : config_(config), mode_(mode), source_format_(source), target_format_(target) {
     read_buf_.resize(config_.read_buf_size);
     write_buf_.resize(config_.write_buf_size);
 }
@@ -93,10 +98,28 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
 
         result.bytes_forwarded += n;
 
-        // Scan for usage in SSE events (lightweight: look for "usage" keyword)
-        std::string_view chunk(read_buf_.data(), n);
-        if (chunk.find("\"usage\"") != std::string_view::npos) {
-            extract_usage_from_event(chunk, result);
+        // Parse complete SSE events for usage without searching arbitrary text
+        // chunks.  This handles a usage object split across reads.
+        event_accumulator_.append(read_buf_.data(), n);
+        size_t consumed = 0;
+        while (true) {
+            auto lf = event_accumulator_.find("\n\n", consumed);
+            auto crlf = event_accumulator_.find("\r\n\r\n", consumed);
+            auto delim = lf;
+            size_t delim_size = 2;
+            if (crlf != std::string::npos && (delim == std::string::npos || crlf < delim)) {
+                delim = crlf;
+                delim_size = 4;
+            }
+            if (delim == std::string::npos) break;
+            extract_usage_from_event(
+                std::string_view(event_accumulator_.data() + consumed,
+                                 delim - consumed + delim_size), result);
+            consumed = delim + delim_size;
+        }
+        if (consumed > 0) event_accumulator_.erase(0, consumed);
+        if (event_accumulator_.size() > config_.read_buf_size * 4) {
+            event_accumulator_.erase(0, event_accumulator_.size() - config_.read_buf_size);
         }
     }
 
@@ -138,35 +161,50 @@ StreamResult StreamPipe::run_transform(ReadFn& read, WriteFn& write) {
         // Accumulate into event buffer and process complete SSE events
         event_accumulator_.append(read_buf_.data(), n);
 
-        // Process complete SSE events (delimited by \n\n)
+        // Process complete SSE events. Providers use both LF and CRLF, and a
+        // delimiter may be split across arbitrary socket reads.
         size_t pos = 0;
         while (true) {
-            auto delim = event_accumulator_.find("\n\n", pos);
+            auto lf_delim = event_accumulator_.find("\n\n", pos);
+            auto crlf_delim = event_accumulator_.find("\r\n\r\n", pos);
+            auto delim = lf_delim;
+            size_t delim_size = 2;
+            if (crlf_delim != std::string::npos
+                && (delim == std::string::npos || crlf_delim < delim)) {
+                delim = crlf_delim;
+                delim_size = 4;
+            }
             if (delim == std::string::npos) break;
 
-            std::string_view event(event_accumulator_.data() + pos, delim - pos + 2);
+            std::string_view event(event_accumulator_.data() + pos, delim - pos + delim_size);
 
             // Transform the event between protocols
             auto transformed = transform_event(event);
 
             // Write transformed event to client
             if (!transformed.empty()) {
-                ssize_t w = write(transformed.data(), transformed.size());
-                if (w < 0) {
-                    result.client_disconnect = true;
-                    result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
-                    return result;
+                size_t written = 0;
+                while (written < transformed.size()) {
+                    ssize_t w = write(transformed.data() + written,
+                                      transformed.size() - written);
+                    if (w <= 0) {
+                        result.client_disconnect = true;
+                        result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
+                        return result;
+                    }
+                    written += static_cast<size_t>(w);
                 }
                 result.bytes_forwarded += transformed.size();
             }
 
             // Extract usage from final events
-            if (event.find("\"usage\"") != std::string_view::npos ||
+            if (event.find("\"usage\"") != std::string_view::npos
+                || event.find("\"usageMetadata\"") != std::string_view::npos ||
                 event.find("message_stop") != std::string_view::npos) {
                 extract_usage_from_event(event, result);
             }
 
-            pos = delim + 2;
+            pos = delim + delim_size;
         }
 
         // Keep unprocessed remainder
@@ -181,27 +219,54 @@ StreamResult StreamPipe::run_transform(ReadFn& read, WriteFn& write) {
 
 void StreamPipe::extract_usage_from_event(std::string_view event_data,
                                            StreamResult& result) {
-    // Lightweight extraction: find "input_tokens":N, "output_tokens":N
-    // In production: use simdjson for precise parsing
-    auto find_int = [&](std::string_view key) -> int {
-        auto pos = event_data.find(key);
-        if (pos == std::string_view::npos) return 0;
-        pos = event_data.find(':', pos + key.size());
-        if (pos == std::string_view::npos) return 0;
-        ++pos;
-        while (pos < event_data.size() && event_data[pos] == ' ') ++pos;
-        int val = 0;
-        while (pos < event_data.size() && event_data[pos] >= '0' && event_data[pos] <= '9') {
-            val = val * 10 + (event_data[pos] - '0');
-            ++pos;
-        }
-        return val;
-    };
+    auto data = event_data.find("data:");
+    if (data == std::string_view::npos) return;
+    data += 5;
+    while (data < event_data.size() && (event_data[data] == ' ' || event_data[data] == '\t')) ++data;
+    auto end = event_data.find('\n', data);
+    if (end == std::string_view::npos) end = event_data.size();
+    while (end > data && event_data[end - 1] == '\r') --end;
+    if (end <= data || event_data.substr(data, end - data) == "[DONE]") return;
 
-    if (auto v = find_int("\"input_tokens\""); v > 0) result.input_tokens = v;
-    if (auto v = find_int("\"output_tokens\""); v > 0) result.output_tokens = v;
-    if (auto v = find_int("\"cache_creation_input_tokens\""); v > 0) result.cache_create_tokens = v;
-    if (auto v = find_int("\"cache_read_input_tokens\""); v > 0) result.cache_read_tokens = v;
+    rapidjson::Document document;
+    document.Parse(event_data.data() + data, end - data);
+    if (document.HasParseError() || !document.IsObject()) return;
+    const rapidjson::Value* usage = nullptr;
+    if (document.HasMember("usage") && document["usage"].IsObject()) usage = &document["usage"];
+    if (!usage && document.HasMember("usageMetadata") && document["usageMetadata"].IsObject())
+        usage = &document["usageMetadata"];
+    if (!usage && document.HasMember("response") && document["response"].IsObject()
+        && document["response"].HasMember("usage") && document["response"]["usage"].IsObject())
+        usage = &document["response"]["usage"];
+    if (!usage) return;
+    auto integer = [&](const rapidjson::Value& object, const char* key) {
+        const auto& value = object[key];
+        if (value.IsInt()) return value.GetInt();
+        if (value.IsInt64()) return static_cast<int>(value.GetInt64());
+        return 0;
+    };
+    if (usage->HasMember("input_tokens")) result.input_tokens = std::max(result.input_tokens, integer(*usage, "input_tokens"));
+    if (usage->HasMember("prompt_tokens")) result.input_tokens = std::max(result.input_tokens, integer(*usage, "prompt_tokens"));
+    if (usage->HasMember("promptTokenCount")) result.input_tokens = std::max(result.input_tokens, integer(*usage, "promptTokenCount"));
+    if (usage->HasMember("output_tokens")) result.output_tokens = std::max(result.output_tokens, integer(*usage, "output_tokens"));
+    if (usage->HasMember("completion_tokens")) result.output_tokens = std::max(result.output_tokens, integer(*usage, "completion_tokens"));
+    if (usage->HasMember("candidatesTokenCount")) result.output_tokens = std::max(result.output_tokens, integer(*usage, "candidatesTokenCount"));
+    if (usage->HasMember("cache_creation_input_tokens")) result.cache_create_tokens = std::max(result.cache_create_tokens, integer(*usage, "cache_creation_input_tokens"));
+    if (usage->HasMember("cache_read_input_tokens")) result.cache_read_tokens = std::max(result.cache_read_tokens, integer(*usage, "cache_read_input_tokens"));
+    if (usage->HasMember("cachedContentTokenCount")) result.cache_read_tokens = std::max(result.cache_read_tokens, integer(*usage, "cachedContentTokenCount"));
+    if (usage->HasMember("reasoning_tokens")) result.reasoning_tokens = std::max(result.reasoning_tokens, integer(*usage, "reasoning_tokens"));
+    if (usage->HasMember("thoughtsTokenCount")) result.reasoning_tokens = std::max(result.reasoning_tokens, integer(*usage, "thoughtsTokenCount"));
+    if (usage->HasMember("output_tokens_details") && (*usage)["output_tokens_details"].IsObject()) {
+        const auto& details = (*usage)["output_tokens_details"];
+        if (details.HasMember("reasoning_tokens"))
+            result.reasoning_tokens = std::max(result.reasoning_tokens,
+                integer(details, "reasoning_tokens"));
+    }
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    usage->Accept(writer);
+    result.provider_usage_json.assign(buffer.GetString(),
+        std::min<size_t>(buffer.GetSize(), 1024 * 1024));
 }
 
 std::string StreamPipe::transform_event(std::string_view event_data) {
@@ -219,6 +284,8 @@ std::string StreamPipe::transform_event(std::string_view event_data) {
             event_type = line.substr(6);
             while (!event_type.empty() && event_type.front() == ' ')
                 event_type.remove_prefix(1);
+            while (!event_type.empty() && event_type.back() == '\r')
+                event_type.remove_suffix(1);
         } else if (line.starts_with("data:")) {
             auto payload = line.substr(5);
             while (!payload.empty() && payload.front() == ' ')
@@ -231,6 +298,29 @@ std::string StreamPipe::transform_event(std::string_view event_data) {
     if (data_payload.empty()) return std::string(event_data);
 
     protocol::StreamDelta delta;
+
+    if (mode_ == ProtocolMode::CrossProtocol || source_format_ != target_format_) {
+        switch (source_format_) {
+        case protocol::Format::Anthropic:
+            delta = protocol::anthropic::parse_stream_event(event_type, data_payload);
+            break;
+        case protocol::Format::OpenAIChatCompletions:
+            delta = protocol::openai::parse_stream_event(data_payload);
+            break;
+        case protocol::Format::OpenAIResponses:
+            delta = protocol::openai_responses::parse_stream_event(data_payload);
+            break;
+        case protocol::Format::Gemini:
+            delta = protocol::gemini::parse_stream_event(data_payload);
+            break;
+        }
+        switch (target_format_) {
+        case protocol::Format::Anthropic: return protocol::anthropic::serialize_stream_event(delta);
+        case protocol::Format::OpenAIChatCompletions: return protocol::openai::serialize_stream_event(delta);
+        case protocol::Format::OpenAIResponses: return protocol::openai_responses::serialize_stream_event(delta);
+        case protocol::Format::Gemini: return protocol::gemini::serialize_stream_event(delta);
+        }
+    }
 
     switch (mode_) {
     case ProtocolMode::AnthropicToOpenAI:

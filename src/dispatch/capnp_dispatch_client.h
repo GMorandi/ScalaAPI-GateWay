@@ -15,6 +15,12 @@ struct DispatchRequest {
         Embeddings = 3,
         Images = 4,
         Gemini = 5,
+        Videos = 6,
+        CountTokens = 7,
+        Models = 8,
+        AlphaSearch = 9,
+        Realtime = 10,
+        Antigravity = 11,
     };
 
     std::string api_key_hash;
@@ -27,6 +33,33 @@ struct DispatchRequest {
     int endpoint = 0;
     std::string metadata_user_id;
     bool stream = false;
+    std::string operation;
+    std::string inbound_format;
+    std::string http_method;
+    std::string request_path;
+    std::string content_type;
+    std::string capability;
+    std::string idempotency_key;
+    bool realtime_session = false;
+    std::string force_platform;
+    std::string request_fingerprint;
+    std::string request_query;
+};
+
+struct MediaOperationRequest {
+    std::string api_key_hash;
+    std::string operation_id;
+    std::string action;
+    std::string request_id;
+    std::string client_ip;
+    std::string idempotency_key;
+    std::string request_fingerprint;
+    std::string status;
+    std::string upstream_task_id;
+    std::string output_metadata;
+    std::string output_url;
+    std::string content_type;
+    int progress = 0;
 };
 
 struct UpstreamTarget {
@@ -42,6 +75,18 @@ struct UpstreamTarget {
     double rate_multiplier = 1.0;
     std::string hold_handle;
     bool tls_fingerprint = false;
+    std::string http_method;
+    std::string upstream_format;
+    std::vector<std::pair<std::string, std::string>> request_headers;
+    std::vector<std::string> allowed_response_headers;
+    std::string websocket_url;
+    std::string websocket_protocol;
+    std::string tls_fingerprint_profile_id;
+    std::vector<std::string> capability_flags;
+    std::string media_operation_id;
+    std::string upstream_task_id;
+    bool polling_supported = false;
+    bool content_download_supported = false;
 };
 
 struct DispatchResult {
@@ -54,6 +99,21 @@ struct DispatchResult {
     std::string reject_message;
     int reject_code = 0;
     int wait_timeout_ms = 0;
+};
+
+struct MediaOperationResult {
+    bool accepted = false;
+    int status_code = 500;
+    std::string operation_id;
+    std::string operation_type;
+    std::string status;
+    int progress = 0;
+    std::string upstream_task_id;
+    std::string output_metadata;
+    std::string output_url;
+    std::string content_type;
+    std::string error_code;
+    std::string error_message;
 };
 
 struct UsageReportData {
@@ -74,6 +134,22 @@ struct UsageReportData {
     bool stream = false;
     bool client_disconnect = false;
     int status_code = 0;
+    int input_image_count = 0;
+    int output_image_count = 0;
+    std::string image_size;
+    int video_count = 0;
+    std::string video_resolution;
+    int video_duration_seconds = 0;
+    int realtime_duration_ms = 0;
+    int realtime_frames = 0;
+    std::string disconnect_reason;
+    std::string provider_usage_json;
+    int reasoning_tokens = 0;
+    std::string service_tier;
+    std::string upstream_endpoint;
+    std::string cancellation_reason;
+    std::string media_operation_id;
+    std::string pricing_version;
 };
 
 struct RpcAck {
@@ -99,6 +175,7 @@ public:
     ~CapnpDispatchClient();
 
     DispatchResult dispatch(const DispatchRequest& req);
+    MediaOperationResult media_operation(const MediaOperationRequest& req);
     RpcAck report_usage(const UsageReportData& report);
     RpcAck abort(const std::string& lease_token, const std::string& reason);
     RpcAck report_upstream_error(const ErrorReportData& error);

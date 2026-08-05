@@ -135,6 +135,8 @@ TEST(UsageCollector, DurableOutboxSurvivesReopenUntilAcknowledged) {
         UsageCollector collector(path);
         auto event = make_event(77);
         event.lease_token = "lease-77";
+        event.media_operation_id = "med-77";
+        event.pricing_version = "price-v2";
         collector.record(std::move(event));
         EXPECT_EQ(collector.pending(), 1u);
     }
@@ -143,6 +145,8 @@ TEST(UsageCollector, DurableOutboxSurvivesReopenUntilAcknowledged) {
         auto events = collector.peek();
         ASSERT_EQ(events.size(), 1u);
         EXPECT_EQ(events[0].request_id, "req-77");
+        EXPECT_EQ(events[0].media_operation_id, "med-77");
+        EXPECT_EQ(events[0].pricing_version, "price-v2");
         collector.acknowledge("lease-77");
         EXPECT_EQ(collector.pending(), 0u);
     }

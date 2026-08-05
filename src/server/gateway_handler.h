@@ -1,6 +1,7 @@
 #pragma once
 
 #include "server/router.h"
+#include "server/capability_registry.h"
 #include "auth/api_key_auth.h"
 #include "auth/speculative_cache.h"
 #include "cache/garnet_client.h"
@@ -14,6 +15,8 @@
 #include <memory>
 #include <string_view>
 
+namespace photon::net::http { class IWebSocketStream; }
+
 namespace gateway::server {
 
 class GatewayHandler {
@@ -24,7 +27,13 @@ public:
                    auth::SpeculativeCache& auth_cache);
 
     int handle(const HttpRequest& req, HttpResponse& resp,
-               dispatch::DispatchRequest::EndpointKind endpoint);
+               const MatchedCapability& capability);
+
+    // Bridges an already-upgraded Responses/Realtime socket.  Dispatch is
+    // performed from the first client event so the lease is tied to the
+    // actual model selected by the caller.
+    int bridge_realtime(const HttpRequest& req,
+                        photon::net::http::IWebSocketStream& client);
 
 private:
     std::string extract_api_key(const HttpRequest& req);

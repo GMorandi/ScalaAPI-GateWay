@@ -25,6 +25,22 @@ struct UsageEvent {
     bool stream = false;
     bool client_disconnect = false;
     int status_code = 0;
+    int input_image_count = 0;
+    int output_image_count = 0;
+    std::string image_size;
+    int video_count = 0;
+    std::string video_resolution;
+    int video_duration_seconds = 0;
+    int realtime_duration_ms = 0;
+    int realtime_frames = 0;
+    std::string disconnect_reason;
+    std::string provider_usage_json;
+    int reasoning_tokens = 0;
+    std::string service_tier;
+    std::string upstream_endpoint;
+    std::string cancellation_reason;
+    std::string media_operation_id;
+    std::string pricing_version;
 };
 
 class UsageCollector {

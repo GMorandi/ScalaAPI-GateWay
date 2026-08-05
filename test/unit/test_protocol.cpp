@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "protocol/formats.h"
 #include "protocol/converter.h"
+#include "forwarder/stream_pipe.h"
 
 using namespace gateway::protocol;
 
@@ -237,6 +238,78 @@ TEST(Conversion, SameFormatPassthrough) {
     EXPECT_EQ(result, body);
 }
 
+TEST(EmbeddingsValidation, AcceptsStringAndStringArrayInputs) {
+    EXPECT_TRUE(Converter::validate_embeddings_request(
+        R"({"model":"text-embedding-3-small","input":"hello","dimensions":256,"encoding_format":"float","user":"u1"})").valid);
+    EXPECT_TRUE(Converter::validate_embeddings_request(
+        R"({"model":"text-embedding-3-small","input":["hello","world"],"encoding_format":"base64"})").valid);
+}
+
+TEST(EmbeddingsValidation, RejectsInvalidInputAndOptions) {
+    EXPECT_FALSE(Converter::validate_embeddings_request(
+        R"({"model":"text-embedding-3-small","input":[]})").valid);
+    EXPECT_FALSE(Converter::validate_embeddings_request(
+        R"({"model":"text-embedding-3-small","input":["ok",3]})").valid);
+    EXPECT_FALSE(Converter::validate_embeddings_request(
+        R"({"model":"text-embedding-3-small","input":"ok","dimensions":0})").valid);
+    EXPECT_FALSE(Converter::validate_embeddings_request(
+        R"({"model":"text-embedding-3-small","input":"ok","encoding_format":"hex"})").valid);
+}
+
+TEST(RealtimeParse, ExtractsModelFromSessionAndResponseEvents) {
+    EXPECT_EQ(Converter::parse_realtime_model(
+        R"({"type":"session.update","session":{"model":"gpt-realtime"}})"),
+        "gpt-realtime");
+    EXPECT_EQ(Converter::parse_realtime_model(
+        R"({"type":"response.create","response":{"model":"gpt-realtime-mini"}})"),
+        "gpt-realtime-mini");
+    EXPECT_TRUE(Converter::parse_realtime_model("not-json").empty());
+}
+
+TEST(MultipartParse, ExtractsModelWithoutTouchingFileBytes) {
+    const std::string body =
+        "--test-boundary\r\n"
+        "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
+        "gpt-image-1\r\n"
+        "--test-boundary\r\n"
+        "Content-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\n"
+        "Content-Type: image/png\r\n\r\n"
+        "\x89PNG\x00\x01\r\n"
+        "--test-boundary--\r\n";
+    EXPECT_EQ(Converter::extract_multipart_field(body,
+        "multipart/form-data; boundary=\"test-boundary\"", "model"), "gpt-image-1");
+}
+
+TEST(MultipartParse, RejectsMissingOrMalformedBoundary) {
+    EXPECT_TRUE(Converter::extract_multipart_field("body", "multipart/form-data", "model").empty());
+    EXPECT_TRUE(Converter::extract_multipart_field("body",
+        "multipart/form-data; boundary=bad\r\nInjected", "model").empty());
+}
+
+TEST(MediaUsage, ParsesJsonImageAndVideoBillingFields) {
+    auto image = gateway::protocol::Converter::parse_media_request(
+        R"({"model":"gpt-image","n":3,"size":"1024x1024"})",
+        "application/json", "images_edits");
+    EXPECT_EQ(image.input_image_count, 1);
+    EXPECT_EQ(image.output_image_count, 3);
+    EXPECT_EQ(image.image_size, "1024x1024");
+
+    auto video = gateway::protocol::Converter::parse_media_request(
+        R"({"model":"grok-video","duration_seconds":8,"resolution":"1280x720"})",
+        "application/json", "videos_generations");
+    EXPECT_EQ(video.video_count, 1);
+    EXPECT_EQ(video.video_duration_seconds, 8);
+    EXPECT_EQ(video.video_resolution, "1280x720");
+}
+
+TEST(MediaUsage, ActualProviderOutputCountOverridesRequestedCount) {
+    auto response = gateway::protocol::Converter::parse_media_response(
+        R"({"data":[{"url":"a"},{"url":"b"}],"size":"512x512"})",
+        "images_generations");
+    EXPECT_EQ(response.output_image_count, 2);
+    EXPECT_EQ(response.image_size, "512x512");
+}
+
 TEST(StreamEvent, OpenAIParse) {
     std::string data = R"({"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]})";
     auto delta = openai::parse_stream_event(data);
@@ -288,4 +361,107 @@ TEST(StreamEvent, SerializeOpenAIDone) {
     delta.type = StreamDelta::Type::Done;
     auto sse = openai::serialize_stream_event(delta);
     EXPECT_EQ(sse, "data: [DONE]\n\n");
+}
+
+TEST(Conversion, CrossProtocolResponseUsesInboundEnvelope) {
+    auto result = Converter::convert_response(
+        R"({"id":"msg_1","model":"claude","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":3,"output_tokens":2}})",
+        Format::Anthropic, Format::OpenAIResponses, "requested-model");
+    EXPECT_NE(result.find("\"object\":\"response\""), std::string::npos);
+    EXPECT_NE(result.find("\"output_text\":\"hello\""), std::string::npos);
+    EXPECT_NE(result.find("\"input_tokens\":3"), std::string::npos);
+    EXPECT_NE(result.find("\"output_tokens\":2"), std::string::npos);
+}
+
+TEST(Conversion, CrossProtocolResponseRejectsMalformedJson) {
+    auto result = Converter::convert_response_checked(
+        "not-json", Format::Anthropic, Format::OpenAIResponses, "model");
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.body.empty());
+    EXPECT_FALSE(result.error.empty());
+}
+
+TEST(Conversion, CrossProtocolResponseRejectsToolCalls) {
+    auto result = Converter::convert_response_checked(
+        R"({"model":"gpt","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}]})",
+        Format::OpenAIChatCompletions, Format::Anthropic, "claude");
+    EXPECT_FALSE(result.success);
+    EXPECT_TRUE(result.body.empty());
+}
+
+TEST(Conversion, UsageIsMappedToGeminiContract) {
+    auto result = Converter::convert_response(
+        R"({"model":"gpt","choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":9,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":3}}})",
+        Format::OpenAIChatCompletions, Format::Gemini, "gemini");
+    EXPECT_NE(result.find("\"usageMetadata\""), std::string::npos);
+    EXPECT_NE(result.find("\"promptTokenCount\":9"), std::string::npos);
+    EXPECT_NE(result.find("\"candidatesTokenCount\":4"), std::string::npos);
+    EXPECT_NE(result.find("\"cachedContentTokenCount\":3"), std::string::npos);
+}
+
+TEST(StreamPipe, ParsesUsageAcrossCrLfChunkBoundaries) {
+    std::vector<std::string> chunks = {
+        "data: {\"usage\":{\"prompt_tokens\":4,",
+        "\"completion_tokens\":2}}\r\n\r\n"
+    };
+    size_t index = 0;
+    std::string emitted;
+    gateway::forwarder::StreamPipe pipe({}, gateway::forwarder::ProtocolMode::OpenAIToAnthropic);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (index == chunks.size()) return 0;
+            const auto& chunk = chunks[index++];
+            std::memcpy(out, chunk.data(), std::min(capacity, chunk.size()));
+            return static_cast<ssize_t>(chunk.size());
+        },
+        [&](const char* data, size_t size) -> ssize_t {
+            emitted.append(data, size);
+            return static_cast<ssize_t>(size);
+        });
+    EXPECT_EQ(result.input_tokens, 4);
+    EXPECT_EQ(result.output_tokens, 2);
+    EXPECT_FALSE(emitted.empty());
+}
+
+TEST(StreamPipe, ParsesGeminiUsageMetadataAndPreservesRawUsage) {
+    std::vector<std::string> chunks = {
+        "data: {\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3,",
+        "\"cachedContentTokenCount\":2,\"thoughtsTokenCount\":1}}\n\n"
+    };
+    size_t index = 0;
+    gateway::forwarder::StreamPipe pipe({}, gateway::forwarder::ProtocolMode::Passthrough);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (index == chunks.size()) return 0;
+            const auto& chunk = chunks[index++];
+            std::memcpy(out, chunk.data(), std::min(capacity, chunk.size()));
+            return static_cast<ssize_t>(chunk.size());
+        },
+        [](const char*, size_t size) -> ssize_t { return static_cast<ssize_t>(size); });
+    EXPECT_EQ(result.input_tokens, 7);
+    EXPECT_EQ(result.output_tokens, 3);
+    EXPECT_EQ(result.cache_read_tokens, 2);
+    EXPECT_EQ(result.reasoning_tokens, 1);
+    EXPECT_NE(result.provider_usage_json.find("promptTokenCount"), std::string::npos);
+}
+
+TEST(StreamPipe, HandlesPartialWritesDuringTransformation) {
+    const std::string input = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n";
+    bool read_once = false;
+    std::string emitted;
+    gateway::forwarder::StreamPipe pipe({}, gateway::forwarder::ProtocolMode::OpenAIToAnthropic);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (read_once) return 0;
+            read_once = true;
+            std::memcpy(out, input.data(), std::min(capacity, input.size()));
+            return static_cast<ssize_t>(input.size());
+        },
+        [&](const char* data, size_t size) -> ssize_t {
+            const auto written = std::min<size_t>(3, size);
+            emitted.append(data, written);
+            return static_cast<ssize_t>(written);
+        });
+    EXPECT_TRUE(result.completed);
+    EXPECT_NE(emitted.find("hello"), std::string::npos);
 }

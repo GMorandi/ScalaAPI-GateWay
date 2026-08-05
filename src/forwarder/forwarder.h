@@ -6,10 +6,31 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace gateway::forwarder {
 
 using StreamWriteFn = std::function<ssize_t(const char*, size_t)>;
+using ResponseStartFn = std::function<void(
+    int, std::string_view,
+    const std::vector<std::pair<std::string, std::string>>&)>;
+
+struct ForwardRequest {
+    std::string_view method;
+    std::string_view body;
+    std::string_view content_type;
+    std::string_view accept;
+    std::string_view user_agent;
+    std::string_view request_id;
+    std::string_view idempotency_key;
+    std::vector<std::pair<std::string, std::string>> headers;
+    bool stream = false;
+    protocol::Format stream_source = protocol::Format::OpenAIChatCompletions;
+    protocol::Format stream_target = protocol::Format::Anthropic;
+    StreamWriteFn stream_write;
+    ResponseStartFn response_start;
+};
 
 struct ForwardResult {
     int status_code = 0;
@@ -22,6 +43,13 @@ struct ForwardResult {
     int first_token_ms = 0;
     int duration_ms = 0;
     bool client_disconnect = false;
+    bool output_started = false;
+    std::string content_type;
+    std::vector<std::pair<std::string, std::string>> response_headers;
+    int retry_after_ms = 0;
+    int reasoning_tokens = 0;
+    std::string provider_usage_json;
+    std::string service_tier;
     std::string error;
 };
 
@@ -32,6 +60,7 @@ struct ForwardConfig {
     uint32_t keepalive_interval_ms = 15000;
     size_t read_buf_size = 64 * 1024;
     size_t write_buf_size = 64 * 1024;
+    size_t max_response_body_size = 64 * 1024 * 1024;
 };
 
 class Forwarder {
@@ -40,9 +69,7 @@ public:
     ~Forwarder();
 
     ForwardResult forward(const dispatch::UpstreamTarget& target,
-                          std::string_view body,
-                          bool stream,
-                          StreamWriteFn stream_write = nullptr,
+                          const ForwardRequest& request,
                           ProtocolMode protocol_mode = ProtocolMode::Passthrough);
 
 private:

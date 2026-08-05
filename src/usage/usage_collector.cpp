@@ -42,6 +42,18 @@ void execute(sqlite3* db, const char* sql) {
     }
 }
 
+void add_column_if_missing(sqlite3* db, const char* sql) {
+    char* error = nullptr;
+    if (sqlite3_exec(db, sql, nullptr, nullptr, &error) == SQLITE_OK) return;
+    std::string message = error ? error : sqlite3_errmsg(db);
+    if (error) sqlite3_free(error);
+    // SQLite has no ADD COLUMN IF NOT EXISTS. A duplicate is the expected
+    // outcome for an already-migrated durable outbox; all other failures are
+    // actionable and must not be hidden.
+    if (message.find("duplicate column name") == std::string::npos)
+        throw std::runtime_error(message);
+}
+
 std::string text_column(sqlite3_stmt* statement, int column) {
     auto* value = sqlite3_column_text(statement, column);
     return value ? reinterpret_cast<const char*>(value) : "";
@@ -84,9 +96,41 @@ UsageCollector::UsageCollector(std::string database_path)
             stream INTEGER NOT NULL,
             client_disconnect INTEGER NOT NULL,
             status_code INTEGER NOT NULL,
+            input_image_count INTEGER NOT NULL DEFAULT 0,
+            output_image_count INTEGER NOT NULL DEFAULT 0,
+            image_size TEXT NOT NULL DEFAULT '',
+            video_count INTEGER NOT NULL DEFAULT 0,
+            video_resolution TEXT NOT NULL DEFAULT '',
+            video_duration_seconds INTEGER NOT NULL DEFAULT 0,
+            realtime_duration_ms INTEGER NOT NULL DEFAULT 0,
+            realtime_frames INTEGER NOT NULL DEFAULT 0,
+            disconnect_reason TEXT NOT NULL DEFAULT '',
+            provider_usage_json TEXT NOT NULL DEFAULT '',
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            service_tier TEXT NOT NULL DEFAULT '',
+            upstream_endpoint TEXT NOT NULL DEFAULT '',
+            cancellation_reason TEXT NOT NULL DEFAULT '',
+            media_operation_id TEXT NOT NULL DEFAULT '',
+            pricing_version TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL DEFAULT (unixepoch())
         )
     )SQL");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN input_image_count INTEGER NOT NULL DEFAULT 0");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN output_image_count INTEGER NOT NULL DEFAULT 0");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN image_size TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN video_count INTEGER NOT NULL DEFAULT 0");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN video_resolution TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN video_duration_seconds INTEGER NOT NULL DEFAULT 0");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN realtime_duration_ms INTEGER NOT NULL DEFAULT 0");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN realtime_frames INTEGER NOT NULL DEFAULT 0");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN disconnect_reason TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN provider_usage_json TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN service_tier TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN upstream_endpoint TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN cancellation_reason TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN media_operation_id TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN pricing_version TEXT NOT NULL DEFAULT ''");
 }
 
 UsageCollector::~UsageCollector() {
@@ -104,8 +148,12 @@ void UsageCollector::record(UsageEvent event) {
             lease_token, request_id, api_key_id, user_id, account_id, group_id,
             model, upstream_model, input_tokens, output_tokens, cache_create_tokens,
             cache_read_tokens, duration_ms, first_token_ms, stream,
-            client_disconnect, status_code)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            client_disconnect, status_code, input_image_count, output_image_count,
+            image_size, video_count, video_resolution, video_duration_seconds,
+            realtime_duration_ms, realtime_frames, disconnect_reason,
+            provider_usage_json, reasoning_tokens, service_tier, upstream_endpoint,
+            cancellation_reason, media_operation_id, pricing_version)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(lease_token) DO NOTHING
     )SQL";
     sqlite3_stmt* statement = nullptr;
@@ -133,6 +181,22 @@ void UsageCollector::record(UsageEvent event) {
     sqlite3_bind_int(statement, i++, event.stream ? 1 : 0);
     sqlite3_bind_int(statement, i++, event.client_disconnect ? 1 : 0);
     sqlite3_bind_int(statement, i++, event.status_code);
+    sqlite3_bind_int(statement, i++, event.input_image_count);
+    sqlite3_bind_int(statement, i++, event.output_image_count);
+    bind_text(event.image_size);
+    sqlite3_bind_int(statement, i++, event.video_count);
+    bind_text(event.video_resolution);
+    sqlite3_bind_int(statement, i++, event.video_duration_seconds);
+    sqlite3_bind_int(statement, i++, event.realtime_duration_ms);
+    sqlite3_bind_int(statement, i++, event.realtime_frames);
+    bind_text(event.disconnect_reason);
+    bind_text(event.provider_usage_json);
+    sqlite3_bind_int(statement, i++, event.reasoning_tokens);
+    bind_text(event.service_tier);
+    bind_text(event.upstream_endpoint);
+    bind_text(event.cancellation_reason);
+    bind_text(event.media_operation_id);
+    bind_text(event.pricing_version);
 
     auto result = sqlite3_step(statement);
     sqlite3_finalize(statement);
@@ -150,7 +214,12 @@ std::vector<UsageEvent> UsageCollector::peek(size_t limit) {
         SELECT lease_token, request_id, api_key_id, user_id, account_id, group_id,
                model, upstream_model, input_tokens, output_tokens,
                cache_create_tokens, cache_read_tokens, duration_ms, first_token_ms,
-               stream, client_disconnect, status_code
+               stream, client_disconnect, status_code, input_image_count,
+               output_image_count, image_size, video_count, video_resolution,
+               video_duration_seconds, realtime_duration_ms, realtime_frames,
+               disconnect_reason, provider_usage_json, reasoning_tokens,
+               service_tier, upstream_endpoint, cancellation_reason,
+               media_operation_id, pricing_version
         FROM usage_outbox ORDER BY created_at, rowid LIMIT ?
     )SQL";
     sqlite3_stmt* statement = nullptr;
@@ -178,6 +247,22 @@ std::vector<UsageEvent> UsageCollector::peek(size_t limit) {
         event.stream = sqlite3_column_int(statement, 14) != 0;
         event.client_disconnect = sqlite3_column_int(statement, 15) != 0;
         event.status_code = sqlite3_column_int(statement, 16);
+        event.input_image_count = sqlite3_column_int(statement, 17);
+        event.output_image_count = sqlite3_column_int(statement, 18);
+        event.image_size = text_column(statement, 19);
+        event.video_count = sqlite3_column_int(statement, 20);
+        event.video_resolution = text_column(statement, 21);
+        event.video_duration_seconds = sqlite3_column_int(statement, 22);
+        event.realtime_duration_ms = sqlite3_column_int(statement, 23);
+        event.realtime_frames = sqlite3_column_int(statement, 24);
+        event.disconnect_reason = text_column(statement, 25);
+        event.provider_usage_json = text_column(statement, 26);
+        event.reasoning_tokens = sqlite3_column_int(statement, 27);
+        event.service_tier = text_column(statement, 28);
+        event.upstream_endpoint = text_column(statement, 29);
+        event.cancellation_reason = text_column(statement, 30);
+        event.media_operation_id = text_column(statement, 31);
+        event.pricing_version = text_column(statement, 32);
         events.push_back(std::move(event));
     }
     sqlite3_finalize(statement);

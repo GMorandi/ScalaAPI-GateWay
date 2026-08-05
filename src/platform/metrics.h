@@ -14,6 +14,7 @@ struct Metrics {
     std::atomic<uint64_t> garnet_hits{0};
     std::atomic<uint64_t> garnet_misses{0};
     std::atomic<uint64_t> upstream_errors{0};
+    std::atomic<uint64_t> conversion_failures{0};
     std::atomic<uint64_t> failovers{0};
     std::atomic<uint64_t> active_connections{0};
     std::atomic<uint64_t> usage_events_buffered{0};

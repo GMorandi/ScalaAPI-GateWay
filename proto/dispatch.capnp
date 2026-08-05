@@ -7,6 +7,7 @@ interface GatewayDispatch {
   reportUsage @1 (report: Types.UsageReport) -> (ack: WriteAck);
   abort @2 (leaseToken: Text, reason: Text) -> (ack: WriteAck);
   reportUpstreamError @3 (report: Types.ErrorReport) -> (ack: WriteAck);
+  mediaOperation @4 (request: MediaOperationRequest) -> (response: MediaOperationResponse);
 }
 
 struct WriteAck {
@@ -28,6 +29,18 @@ struct DispatchRequest {
   metadataUserId @8 :Text;
   protocolVersion @9 :UInt16;
   stream @10 :Bool;
+  # v2 extension fields.  Existing field numbers are intentionally immutable.
+  operation @11 :Text;
+  inboundFormat @12 :Text;
+  httpMethod @13 :Text;
+  requestPath @14 :Text;
+  contentType @15 :Text;
+  capability @16 :Text;
+  idempotencyKey @17 :Text;
+  realtimeSession @18 :Bool;
+  forcePlatform @19 :Text;
+  requestFingerprint @20 :Text;
+  requestQuery @21 :Text;
 
   enum EndpointKind {
     messages @0;
@@ -36,6 +49,12 @@ struct DispatchRequest {
     embeddings @3;
     images @4;
     gemini @5;
+    videos @6;
+    countTokens @7;
+    models @8;
+    alphaSearch @9;
+    realtime @10;
+    antigravity @11;
   }
 }
 
@@ -78,10 +97,45 @@ struct RejectInfo {
     concurrencyExceeded @5;
     ipBlocked @6;
     quotaExhausted @7;
+    idempotencyConflict @8;
+    unsupportedCapability @9;
+    idempotencyReplay @10;
+    pricingUnavailable @11;
   }
 }
 
 struct AbortRequest {
   leaseToken @0 :Text;
   reason @1 :Text;
+}
+
+struct MediaOperationRequest {
+  apiKeyHash @0 :Text;
+  operationId @1 :Text;
+  action @2 :Text;
+  requestId @3 :Text;
+  clientIp @4 :Text;
+  idempotencyKey @5 :Text;
+  requestFingerprint @6 :Text;
+  status @7 :Text;
+  upstreamTaskId @8 :Text;
+  outputMetadata @9 :Text;
+  outputUrl @10 :Text;
+  contentType @11 :Text;
+  progress @12 :Int32;
+}
+
+struct MediaOperationResponse {
+  accepted @0 :Bool;
+  statusCode @1 :Int32;
+  operationId @2 :Text;
+  operationType @3 :Text;
+  status @4 :Text;
+  progress @5 :Int32;
+  upstreamTaskId @6 :Text;
+  outputMetadata @7 :Text;
+  outputUrl @8 :Text;
+  contentType @9 :Text;
+  errorCode @10 :Text;
+  errorMessage @11 :Text;
 }

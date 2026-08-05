@@ -24,6 +24,7 @@ enum class Method : uint8_t {
     ReportUsage = 2,
     Abort = 3,
     ReportUpstreamError = 4,
+    MediaOperation = 5,
 };
 
 struct CapnpDispatchClient::Impl {
@@ -177,6 +178,17 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     builder.setMetadataUserId(req.metadata_user_id);
     builder.setProtocolVersion(2);
     builder.setStream(req.stream);
+    builder.setOperation(req.operation);
+    builder.setInboundFormat(req.inbound_format);
+    builder.setHttpMethod(req.http_method);
+    builder.setRequestPath(req.request_path);
+    builder.setContentType(req.content_type);
+    builder.setCapability(req.capability);
+    builder.setIdempotencyKey(req.idempotency_key);
+    builder.setRequestFingerprint(req.request_fingerprint);
+    builder.setRealtimeSession(req.realtime_session);
+    builder.setForcePlatform(req.force_platform);
+    builder.setRequestQuery(req.request_query);
 
     auto excluded = builder.initExcludedAccounts(req.excluded_accounts.size());
     for (size_t i = 0; i < req.excluded_accounts.size(); ++i) {
@@ -240,6 +252,15 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
         result.upstream.user_id = up.getUserId();
         result.upstream.group_id = up.getGroupId();
         result.upstream.tls_fingerprint = up.getTlsFingerprint();
+        result.upstream.http_method = up.getHttpMethod();
+        result.upstream.upstream_format = up.getUpstreamFormat();
+        result.upstream.websocket_url = up.getWebsocketUrl();
+        result.upstream.websocket_protocol = up.getWebsocketProtocol();
+        result.upstream.tls_fingerprint_profile_id = up.getTlsFingerprintProfileId();
+        result.upstream.media_operation_id = up.getMediaOperationId();
+        result.upstream.upstream_task_id = up.getUpstreamTaskId();
+        result.upstream.polling_supported = up.getPollingSupported();
+        result.upstream.content_download_supported = up.getContentDownloadSupported();
 
         if (up.hasProxy()) {
             result.upstream.proxy_url = up.getProxy().getUrl();
@@ -254,8 +275,65 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
         for (auto hdr : headers) {
             result.upstream.auth_headers.emplace_back(hdr.getKey(), hdr.getValue());
         }
+        for (auto hdr : up.getRequestHeaders()) {
+            result.upstream.request_headers.emplace_back(hdr.getKey(), hdr.getValue());
+        }
+        for (auto name : up.getAllowedResponseHeaders()) {
+            result.upstream.allowed_response_headers.emplace_back(name);
+        }
+        for (auto flag : up.getCapabilityFlags()) {
+            result.upstream.capability_flags.emplace_back(flag);
+        }
     }
 
+    return result;
+}
+
+MediaOperationResult CapnpDispatchClient::media_operation(
+    const MediaOperationRequest& req) {
+    MediaOperationResult result;
+    std::lock_guard<photon::mutex> guard(impl_->mutex);
+
+    capnp::MallocMessageBuilder msg;
+    auto builder = msg.initRoot<::MediaOperationRequest>();
+    builder.setApiKeyHash(req.api_key_hash);
+    builder.setOperationId(req.operation_id);
+    builder.setAction(req.action);
+    builder.setRequestId(req.request_id);
+    builder.setClientIp(req.client_ip);
+    builder.setIdempotencyKey(req.idempotency_key);
+    builder.setRequestFingerprint(req.request_fingerprint);
+    builder.setStatus(req.status);
+    builder.setUpstreamTaskId(req.upstream_task_id);
+    builder.setOutputMetadata(req.output_metadata);
+    builder.setOutputUrl(req.output_url);
+    builder.setContentType(req.content_type);
+    builder.setProgress(req.progress);
+
+    auto words = capnp::messageToFlatArray(msg);
+    auto response = impl_->exchange(Method::MediaOperation, words);
+    if (response.empty() || response[0] != 0x85
+        || (response.size() - 1) % sizeof(capnp::word) != 0) {
+        result.error_code = "platform_unavailable";
+        result.error_message = "Platform media operation service unavailable";
+        return result;
+    }
+    std::vector<capnp::word> aligned((response.size() - 1) / sizeof(capnp::word));
+    std::memcpy(aligned.data(), response.data() + 1, response.size() - 1);
+    capnp::FlatArrayMessageReader reader(kj::arrayPtr(aligned.data(), aligned.size()));
+    auto wire = reader.getRoot<::MediaOperationResponse>();
+    result.accepted = wire.getAccepted();
+    result.status_code = wire.getStatusCode();
+    result.operation_id = wire.getOperationId();
+    result.operation_type = wire.getOperationType();
+    result.status = wire.getStatus();
+    result.progress = wire.getProgress();
+    result.upstream_task_id = wire.getUpstreamTaskId();
+    result.output_metadata = wire.getOutputMetadata();
+    result.output_url = wire.getOutputUrl();
+    result.content_type = wire.getContentType();
+    result.error_code = wire.getErrorCode();
+    result.error_message = wire.getErrorMessage();
     return result;
 }
 
@@ -293,6 +371,22 @@ RpcAck CapnpDispatchClient::report_usage(const UsageReportData& report) {
     builder.setStream(report.stream);
     builder.setClientDisconnect(report.client_disconnect);
     builder.setStatusCode(report.status_code);
+    builder.setInputImageCount(report.input_image_count);
+    builder.setOutputImageCount(report.output_image_count);
+    builder.setImageSize(report.image_size);
+    builder.setVideoCount(report.video_count);
+    builder.setVideoResolution(report.video_resolution);
+    builder.setVideoDurationSeconds(report.video_duration_seconds);
+    builder.setRealtimeDurationMs(report.realtime_duration_ms);
+    builder.setRealtimeFrames(report.realtime_frames);
+    builder.setDisconnectReason(report.disconnect_reason);
+    builder.setProviderUsageJson(report.provider_usage_json);
+    builder.setReasoningTokens(report.reasoning_tokens);
+    builder.setServiceTier(report.service_tier);
+    builder.setUpstreamEndpoint(report.upstream_endpoint);
+    builder.setCancellationReason(report.cancellation_reason);
+    builder.setMediaOperationId(report.media_operation_id);
+    builder.setPricingVersion(report.pricing_version);
 
     auto words = capnp::messageToFlatArray(msg);
     return parse_ack(impl_->exchange(Method::ReportUsage, words), 0x82);

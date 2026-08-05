@@ -1,6 +1,7 @@
 #pragma once
 
 #include <photon/net/socket.h>
+#include "protocol/converter.h"
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -14,10 +15,12 @@ struct StreamResult {
     int output_tokens = 0;
     int cache_create_tokens = 0;
     int cache_read_tokens = 0;
+    int reasoning_tokens = 0;
     int first_token_ms = 0;
     int total_duration_ms = 0;
     bool completed = false;
     bool client_disconnect = false;
+    std::string provider_usage_json;
 };
 
 enum class ProtocolMode {
@@ -25,6 +28,7 @@ enum class ProtocolMode {
     AnthropicToOpenAI,
     OpenAIToAnthropic,
     GeminiCompat,
+    CrossProtocol,
 };
 
 struct StreamPipeConfig {
@@ -42,7 +46,9 @@ using ReadFn = std::function<ssize_t(char*, size_t)>;
 
 class StreamPipe {
 public:
-    explicit StreamPipe(const StreamPipeConfig& config, ProtocolMode mode);
+    explicit StreamPipe(const StreamPipeConfig& config, ProtocolMode mode,
+                        protocol::Format source = protocol::Format::OpenAIChatCompletions,
+                        protocol::Format target = protocol::Format::Anthropic);
 
     StreamResult run(ReadFn upstream_read, WriteFn client_write);
 
@@ -56,6 +62,8 @@ private:
 
     StreamPipeConfig config_;
     ProtocolMode mode_;
+    protocol::Format source_format_;
+    protocol::Format target_format_;
     std::string read_buf_;
     std::string write_buf_;
     std::string event_accumulator_;

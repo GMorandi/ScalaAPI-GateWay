@@ -46,6 +46,7 @@ target_link_libraries(capnp_gen PUBLIC capnp-rpc)
 # --- Gateway core library ---
 add_library(gateway_core STATIC
     src/server/http_server.cpp
+    src/server/capability_registry.cpp
     src/server/router.cpp
     src/server/websocket.cpp
     src/server/gateway_handler.cpp

@@ -53,6 +53,20 @@ struct UpstreamTarget {
   groupId @8 :Int64;
   billing @9 :BillingContext;
   tlsFingerprint @10 :Bool;
+  # v2 extension fields.  Providers select these rather than relying on
+  # Gateway-side guesses about request shape or supported capabilities.
+  httpMethod @11 :Text;
+  upstreamFormat @12 :Text;
+  requestHeaders @13 :List(Header);
+  allowedResponseHeaders @14 :List(Text);
+  websocketUrl @15 :Text;
+  websocketProtocol @16 :Text;
+  tlsFingerprintProfileId @17 :Text;
+  capabilityFlags @18 :List(Text);
+  mediaOperationId @19 :Text;
+  upstreamTaskId @20 :Text;
+  pollingSupported @21 :Bool;
+  contentDownloadSupported @22 :Bool;
 
   struct Header {
     key @0 :Text;
@@ -118,6 +132,22 @@ struct UsageReport {
   ipAddress @18 :Text;
   userAgent @19 :Text;
   statusCode @20 :Int32;
+  inputImageCount @21 :Int32;
+  outputImageCount @22 :Int32;
+  imageSize @23 :Text;
+  videoCount @24 :Int32;
+  videoResolution @25 :Text;
+  videoDurationSeconds @26 :Int32;
+  realtimeDurationMs @27 :Int32;
+  realtimeFrames @28 :Int32;
+  disconnectReason @29 :Text;
+  providerUsageJson @30 :Text;
+  reasoningTokens @31 :Int32;
+  serviceTier @32 :Text;
+  upstreamEndpoint @33 :Text;
+  cancellationReason @34 :Text;
+  mediaOperationId @35 :Text;
+  pricingVersion @36 :Text;
 }
 
 struct ErrorReport {

@@ -1,10 +1,12 @@
 #include "server/router.h"
+#include "server/capability_registry.h"
 #include "server/gateway_handler.h"
 #include "cache/garnet_client.h"
 #include "auth/speculative_cache.h"
 #include "usage/usage_collector.h"
 #include "platform/logging.h"
 #include "platform/metrics.h"
+#include <photon/net/http/websocket.h>
 
 #include <format>
 
@@ -39,49 +41,6 @@ Router::~Router() = default;
 
 int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
     auto path = req.path;
-
-    if (path == "/v1/messages" || path == "/messages") {
-        return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::Messages);
-    }
-
-    if (path == "/v1/chat/completions" || path == "/chat/completions") {
-        return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::ChatCompletions);
-    }
-
-    if (path == "/v1/responses" || path == "/responses") {
-        return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::Responses);
-    }
-
-    if (path == "/v1/embeddings" || path == "/embeddings") {
-        resp.status_code = 501;
-        resp.body = R"({"error":{"type":"unsupported_endpoint","message":"Embeddings are not supported"}})";
-        return 0;
-    }
-
-    if (path == "/v1/images/generations" || path == "/images/generations") {
-        resp.status_code = 501;
-        resp.body = R"({"error":{"type":"unsupported_endpoint","message":"Image generation is not supported"}})";
-        return 0;
-    }
-
-    if (path == "/v1/messages/count_tokens" || path == "/messages/count_tokens") {
-        return handle_count_tokens(req, resp);
-    }
-
-    if (path == "/v1/models" || path == "/models") {
-        return handle_models(req, resp);
-    }
-
-    if (path.starts_with("/v1beta/")
-        && (path.find(":generateContent") != std::string_view::npos
-            || path.find(":streamGenerateContent") != std::string_view::npos)) {
-        return impl_->gateway->handle(req, resp, dispatch::DispatchRequest::EndpointKind::Gemini);
-    }
-    if (path.starts_with("/v1beta/")) {
-        resp.status_code = 501;
-        resp.body = R"({"error":{"code":501,"message":"This Gemini endpoint is not supported","status":"UNIMPLEMENTED"}})";
-        return 0;
-    }
 
     if (path == "/live") {
         resp.status_code = 200;
@@ -121,6 +80,9 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
             "# HELP gateway_upstream_errors Upstream errors\n"
             "# TYPE gateway_upstream_errors counter\n"
             "gateway_upstream_errors {}\n"
+            "# HELP gateway_conversion_failures_total Protocol response conversion failures\n"
+            "# TYPE gateway_conversion_failures_total counter\n"
+            "gateway_conversion_failures_total {}\n"
             "# HELP gateway_failovers Account failovers\n"
             "# TYPE gateway_failovers counter\n"
             "gateway_failovers {}\n"
@@ -139,35 +101,43 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
             m.requests_total.load(), m.requests_streaming.load(),
             m.requests_failed.load(), m.dispatch_calls.load(),
             m.garnet_hits.load(), m.garnet_misses.load(),
-            m.upstream_errors.load(), m.failovers.load(),
+            m.upstream_errors.load(), m.conversion_failures.load(), m.failovers.load(),
             m.active_connections.load(), m.usage_events_buffered.load(),
             m.usage_report_failures.load(), m.dispatch_reconnects.load());
         return 0;
     }
 
-    resp.status_code = 404;
-    return 0;
-}
-
-int Router::handle_models(const HttpRequest& req, HttpResponse& resp) {
-    auto cached = impl_->garnet->get("models:list");
-    if (cached.found && !cached.value.empty()) {
-        resp.status_code = 200;
-        resp.body = cached.value;
-        return 0;
+    auto capability = match_capability(req.method, path);
+    if (capability.spec) {
+        // Preserve the historical unauthenticated discovery response for
+        // clients that probe the generic models endpoint without a key. A
+        // keyed request is dispatched through Platform and receives the
+        // provider-aware catalog.
+        if (capability.spec->capability == Capability::Models
+            && req.authorization.empty() && req.x_api_key.empty()) {
+            auto cached = impl_->garnet->get("models:list");
+            resp.status_code = 200;
+            resp.body = cached.found && !cached.value.empty()
+                ? cached.value : R"({"object":"list","data":[]})";
+            return 0;
+        }
+        return impl_->gateway->handle(req, resp, capability);
     }
 
-    resp.status_code = 200;
-    resp.body = R"({"object":"list","data":[]})";
+    resp.status_code = 404;
+    resp.body = R"({"error":{"type":"not_found_error","message":"Unknown or unsupported endpoint"}})";
     return 0;
 }
 
-int Router::handle_count_tokens(const HttpRequest& req, HttpResponse& resp) {
-    int estimated = static_cast<int>(req.body.size() / 4);
-    if (estimated < 1) estimated = 1;
-    resp.status_code = 200;
-    resp.body = std::format(R"({{"input_tokens":{}}})", estimated);
-    return 0;
+int Router::handle_websocket(const HttpRequest& req,
+                             photon::net::http::IWebSocketStream& client) {
+    auto capability = match_capability("GET", req.path);
+    if (!capability.spec || !capability.spec->realtime) {
+        client.close(photon::net::http::WebSocketCloseCode::PolicyViolation,
+                     "unsupported realtime endpoint");
+        return -1;
+    }
+    return impl_->gateway->bridge_realtime(req, client);
 }
 
 }  // namespace gateway::server

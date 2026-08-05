@@ -61,6 +61,22 @@ void UsageReporter::run_loop() {
             report.stream = ev.stream;
             report.client_disconnect = ev.client_disconnect;
             report.status_code = ev.status_code;
+            report.input_image_count = ev.input_image_count;
+            report.output_image_count = ev.output_image_count;
+            report.image_size = std::move(ev.image_size);
+            report.video_count = ev.video_count;
+            report.video_resolution = std::move(ev.video_resolution);
+            report.video_duration_seconds = ev.video_duration_seconds;
+            report.realtime_duration_ms = ev.realtime_duration_ms;
+            report.realtime_frames = ev.realtime_frames;
+            report.disconnect_reason = std::move(ev.disconnect_reason);
+            report.provider_usage_json = std::move(ev.provider_usage_json);
+            report.reasoning_tokens = ev.reasoning_tokens;
+            report.service_tier = std::move(ev.service_tier);
+            report.upstream_endpoint = std::move(ev.upstream_endpoint);
+            report.cancellation_reason = std::move(ev.cancellation_reason);
+            report.media_operation_id = std::move(ev.media_operation_id);
+            report.pricing_version = std::move(ev.pricing_version);
             auto ack = impl_->dispatch->report_usage(report);
             if (ack.acknowledged()) {
                 impl_->collector->acknowledge(report.lease_token);
