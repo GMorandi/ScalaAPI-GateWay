@@ -1,6 +1,7 @@
 #include "auth/invalidation_subscriber.h"
 #include "auth/speculative_cache.h"
 #include "cache/garnet_client.h"
+#include "cache/garnet_keyspace.h"
 #include "dispatch/capnp_dispatch_client.h"
 #include "platform/logging.h"
 
@@ -10,7 +11,6 @@
 
 namespace gateway::auth {
 
-static constexpr const char* kVersionKey = "invalidation:version";
 static constexpr int kPollIntervalSec = 2;
 
 struct InvalidationSubscriber::Impl {
@@ -41,7 +41,7 @@ void InvalidationSubscriber::run_loop() {
     impl_->running.store(true);
     LOG_INFO("Invalidation subscriber started");
 
-    auto resp = impl_->garnet->get(kVersionKey);
+    auto resp = impl_->garnet->get(cache::keyspace::kInvalidationVersion);
     if (resp.found) {
         impl_->last_version = resp.value;
     }
@@ -50,7 +50,7 @@ void InvalidationSubscriber::run_loop() {
         photon::thread_sleep(kPollIntervalSec);
         if (!impl_->running.load()) break;
 
-        auto r = impl_->garnet->get(kVersionKey);
+        auto r = impl_->garnet->get(cache::keyspace::kInvalidationVersion);
         if (!r.found) continue;
 
         if (r.value != impl_->last_version) {

@@ -1,4 +1,5 @@
 #include "server/gateway_handler.h"
+#include "cache/garnet_keyspace.h"
 #include "platform/logging.h"
 #include "platform/metrics.h"
 #include "forwarder/retry_policy.h"
@@ -268,7 +269,7 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
     int64_t cached_version = 0;
     if (auto hit = auth_cache_.lookup(key_hash)) cached_version = hit->version;
     else {
-        auto cached = garnet_.get(std::format("auth:{}", key_hash));
+        auto cached = garnet_.get(cache::keyspace::auth(key_hash));
         if (cached.found) cached_version = parse_auth_version(cached.value);
     }
     auto now = std::chrono::steady_clock::now();
@@ -520,7 +521,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         cached_version = cache_hit->version;
         metrics.garnet_hits.fetch_add(1, std::memory_order_relaxed);
     } else {
-        std::string garnet_key = std::format("auth:{}", key_hash);
+        std::string garnet_key = cache::keyspace::auth(key_hash);
         auto garnet_resp = garnet_.get(garnet_key);
         if (garnet_resp.found) {
             metrics.garnet_hits.fetch_add(1, std::memory_order_relaxed);
