@@ -236,6 +236,9 @@ static int http_handler(void* self, photon::net::http::Request& req,
             }
             resp.headers.insert("Content-Type", gw_resp.content_type.empty() ? "text/event-stream" : gw_resp.content_type);
             if (gw_resp.content_type.empty() || gw_resp.content_type.starts_with("text/event-stream")) {
+                // Streaming responses have no known length. Photon selects its
+                // bounded body writer unless chunked framing is explicit.
+                resp.headers.insert("Transfer-Encoding", "chunked");
                 resp.headers.insert("Cache-Control", "no-cache");
                 resp.headers.insert("Connection", "keep-alive");
             }
