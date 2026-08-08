@@ -6,6 +6,7 @@ add_executable(unit_tests
     unit/test_retry_failover.cpp
     unit/test_usage_collector.cpp
     unit/test_router.cpp
+    unit/test_fault_injection.cpp
 )
 target_link_libraries(unit_tests PRIVATE gateway_core GTest::gtest_main)
 include(GoogleTest)

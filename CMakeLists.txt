@@ -68,6 +68,7 @@ add_library(gateway_core STATIC
     src/usage/usage_collector.cpp
     src/usage/usage_reporter.cpp
     src/platform/core_runtime.cpp
+    src/platform/fault_injection.cpp
     src/platform/metrics.cpp
     src/platform/logging.cpp
 )

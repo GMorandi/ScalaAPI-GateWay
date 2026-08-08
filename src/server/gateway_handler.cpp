@@ -2,6 +2,7 @@
 #include "cache/garnet_keyspace.h"
 #include "platform/logging.h"
 #include "platform/metrics.h"
+#include "platform/fault_injection.h"
 #include "forwarder/retry_policy.h"
 
 #include <photon/thread/thread.h>
@@ -764,6 +765,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         }
 
         // Forward
+        platform::FaultInjection::crash_if_configured(
+            "gateway.before_provider_dispatch", request_id);
         auto& target = dispatch_result.upstream;
 
         const auto upstream_format = format_from_name(target.upstream_format,
@@ -838,6 +841,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             },
         };
         forward_result = forwarder_->forward(target, forward_request, stream_mode);
+        platform::FaultInjection::crash_if_configured(
+            "gateway.after_provider_completion", request_id);
         const auto malformed_provider_usage = forward_result.malformed_usage;
 
         if (malformed_provider_usage) {
