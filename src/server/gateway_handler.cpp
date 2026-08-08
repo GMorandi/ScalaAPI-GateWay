@@ -791,7 +791,10 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
 
         // Check if we need failover
         if (forward_result.status_code >= 400 && !malformed_provider_usage) {
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start).count();
             auto retryable = spec.can_failover && !forward_result.output_started
+                && elapsed_ms < retry_policy.max_elapsed_ms
                 && retry_policy.is_retryable_status(forward_result.status_code);
             auto action = retryable
                 ? failover.handle_error(target.account_id, forward_result.status_code)

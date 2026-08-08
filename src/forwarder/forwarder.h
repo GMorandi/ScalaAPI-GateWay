@@ -55,6 +55,9 @@ struct ForwardResult {
 };
 
 struct ForwardConfig {
+    // Applies to non-streaming upstream calls. Streaming calls use the total
+    // stream budget below so long-lived responses do not inherit this bound.
+    uint32_t request_timeout_ms = 30'000;
     uint32_t first_token_timeout_ms = 60000;
     uint32_t inter_chunk_timeout_ms = 120000;
     uint32_t total_stream_timeout_ms = 300000;

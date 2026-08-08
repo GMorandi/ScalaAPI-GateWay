@@ -187,7 +187,8 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
     if (verb == photon::net::http::Verb::UNKNOWN) verb = photon::net::http::Verb::POST;
     auto* op = http_client->new_operation(verb, url);
 
-    op->timeout = {impl_->config.total_stream_timeout_ms * 1000ULL};
+    op->timeout = {(request.stream ? impl_->config.total_stream_timeout_ms
+                                   : impl_->config.request_timeout_ms) * 1000ULL};
 
     for (auto& [key, value] : target.auth_headers) {
         op->req.headers.insert(key, value);
