@@ -48,6 +48,8 @@ struct ForwardResult {
     int first_token_ms = 0;
     int duration_ms = 0;
     bool client_disconnect = false;
+    bool stream_incomplete = false;
+    bool stream_timeout = false;
     bool output_started = false;
     bool provider_response_received = false;
     int provider_status_code = 0;
@@ -57,6 +59,8 @@ struct ForwardResult {
     int retry_after_ms = 0;
     int reasoning_tokens = 0;
     std::string provider_usage_json;
+    std::string disconnect_reason;
+    std::string cancellation_reason;
     std::string service_tier;
     std::string error;
 };

@@ -245,6 +245,7 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
     if (ret < 0) {
         result.status_code = 502;
         result.error = "upstream connection failed";
+        result.body = R"({"error":{"type":"provider_connection_error","message":"Provider connection failed before a response was received"}})";
         LOG_ERROR("Forward to {} failed: {}", url, strerror(errno));
         http_client->destroy_operation(op);
         return result;
@@ -363,6 +364,32 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         result.first_token_ms = stream_result.first_token_ms;
         result.duration_ms = stream_result.total_duration_ms;
         result.client_disconnect = stream_result.client_disconnect;
+        result.stream_incomplete = stream_result.incomplete;
+        result.stream_timeout = stream_result.timed_out;
+        if (result.client_disconnect) {
+            result.disconnect_reason = "client_disconnect";
+            result.cancellation_reason = result.output_started
+                ? "client_disconnect_after_output" : "client_disconnect_before_output";
+            if (!result.output_started) {
+                result.status_code = 499;
+                result.error = "client disconnected before response output";
+            } else if (result.stream_incomplete) {
+                result.status_code = 502;
+                result.error = "client disconnected before provider stream completion";
+            }
+        } else if (result.stream_incomplete) {
+            result.status_code = 502;
+            result.content_type = "application/json";
+            result.disconnect_reason = result.stream_timeout
+                ? "provider_timeout" : "provider_disconnect";
+            result.cancellation_reason = "provider_stream_incomplete";
+            result.error = result.stream_timeout
+                ? "provider stream timed out before a terminal event"
+                : "provider stream ended before a terminal event";
+            if (!result.output_started) {
+                result.body = R"({"error":{"type":"provider_protocol_error","message":"Provider stream ended before completion"}})";
+            }
+        }
     }
 
     http_client->destroy_operation(op);

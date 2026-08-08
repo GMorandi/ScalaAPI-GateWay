@@ -19,6 +19,10 @@ struct StreamResult {
     int first_token_ms = 0;
     int total_duration_ms = 0;
     bool completed = false;
+    bool terminal_event_seen = false;
+    bool incomplete = false;
+    bool provider_disconnect = false;
+    bool timed_out = false;
     bool client_disconnect = false;
     bool malformed_usage = false;
     std::string provider_usage_json;
@@ -58,6 +62,7 @@ private:
     StreamResult run_transform(ReadFn& read, WriteFn& write);
 
     void extract_usage_from_event(std::string_view event_data, StreamResult& result);
+    bool is_terminal_event(std::string_view event_data) const;
     std::string transform_event(std::string_view event_data);
     bool inject_keepalive(WriteFn& write, uint64_t last_write_ms);
 

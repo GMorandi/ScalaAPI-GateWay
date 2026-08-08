@@ -75,6 +75,8 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
         auto elapsed = now_ms() - stream_start;
         if (elapsed > config_.total_timeout_ms) {
             LOG_WARN("Stream total timeout exceeded ({}ms)", elapsed);
+            result.incomplete = true;
+            result.timed_out = true;
             break;
         }
 
@@ -86,15 +88,23 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
             auto since_last = now_ms() - last_data_ms;
             if (!first_token_received && since_last > config_.first_token_timeout_ms) {
                 LOG_WARN("First token timeout ({}ms)", since_last);
+                result.incomplete = true;
+                result.timed_out = true;
                 break;
             }
             if (first_token_received && since_last > config_.inter_chunk_timeout_ms) {
                 LOG_WARN("Inter-chunk timeout ({}ms)", since_last);
+                result.incomplete = true;
+                result.timed_out = true;
                 break;
             }
             // Inject keepalive toward client if silent
             if (config_.inject_keepalive) {
-                inject_keepalive(write, last_write_ms);
+                if (inject_keepalive(write, last_write_ms)) {
+                    result.client_disconnect = true;
+                    result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
+                    return result;
+                }
             }
             continue;
         }
@@ -102,6 +112,10 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
         if (n == 0) {
             // Upstream closed connection — stream complete
             result.completed = true;
+            if (!result.terminal_event_seen) {
+                result.incomplete = true;
+                result.provider_disconnect = true;
+            }
             break;
         }
 
@@ -117,9 +131,10 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
         size_t written = 0;
         while (written < static_cast<size_t>(n)) {
             ssize_t w = write(read_buf_.data() + written, n - written);
-            if (w < 0) {
+            if (w <= 0) {
                 // Client disconnected (EPIPE / ECONNRESET)
                 result.client_disconnect = true;
+                result.incomplete = !result.terminal_event_seen;
                 result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
                 return result;
             }
@@ -146,6 +161,10 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
             extract_usage_from_event(
                 std::string_view(event_accumulator_.data() + consumed,
                                  delim - consumed + delim_size), result);
+            if (is_terminal_event(std::string_view(event_accumulator_.data() + consumed,
+                                                   delim - consumed + delim_size))) {
+                result.terminal_event_seen = true;
+            }
             consumed = delim + delim_size;
         }
         if (consumed > 0) event_accumulator_.erase(0, consumed);
@@ -166,19 +185,35 @@ StreamResult StreamPipe::run_transform(ReadFn& read, WriteFn& write) {
 
     while (true) {
         auto elapsed = now_ms() - stream_start;
-        if (elapsed > config_.total_timeout_ms) break;
+        if (elapsed > config_.total_timeout_ms) {
+            result.incomplete = true;
+            result.timed_out = true;
+            break;
+        }
 
         ssize_t n = read(read_buf_.data(), read_buf_.size());
 
         if (n < 0) {
             auto since_last = now_ms() - last_data_ms;
-            if (!first_token_received && since_last > config_.first_token_timeout_ms) break;
-            if (first_token_received && since_last > config_.inter_chunk_timeout_ms) break;
+            if (!first_token_received && since_last > config_.first_token_timeout_ms) {
+                result.incomplete = true;
+                result.timed_out = true;
+                break;
+            }
+            if (first_token_received && since_last > config_.inter_chunk_timeout_ms) {
+                result.incomplete = true;
+                result.timed_out = true;
+                break;
+            }
             continue;
         }
 
         if (n == 0) {
             result.completed = true;
+            if (!result.terminal_event_seen) {
+                result.incomplete = true;
+                result.provider_disconnect = true;
+            }
             break;
         }
 
@@ -220,6 +255,7 @@ StreamResult StreamPipe::run_transform(ReadFn& read, WriteFn& write) {
                                       transformed.size() - written);
                     if (w <= 0) {
                         result.client_disconnect = true;
+                        result.incomplete = !result.terminal_event_seen;
                         result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
                         return result;
                     }
@@ -234,6 +270,7 @@ StreamResult StreamPipe::run_transform(ReadFn& read, WriteFn& write) {
                 event.find("message_stop") != std::string_view::npos) {
                 extract_usage_from_event(event, result);
             }
+            if (is_terminal_event(event)) result.terminal_event_seen = true;
 
             pos = delim + delim_size;
         }
@@ -246,6 +283,55 @@ StreamResult StreamPipe::run_transform(ReadFn& read, WriteFn& write) {
 
     result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
     return result;
+}
+
+bool StreamPipe::is_terminal_event(std::string_view event_data) const {
+    std::string_view event_type;
+    std::string_view data_payload;
+    size_t pos = 0;
+    while (pos < event_data.size()) {
+        auto line_end = event_data.find('\n', pos);
+        if (line_end == std::string_view::npos) line_end = event_data.size();
+        auto line = event_data.substr(pos, line_end - pos);
+        if (line.starts_with("event:")) {
+            event_type = line.substr(6);
+            while (!event_type.empty() && event_type.front() == ' ') event_type.remove_prefix(1);
+            while (!event_type.empty() && event_type.back() == '\r') event_type.remove_suffix(1);
+        } else if (line.starts_with("data:")) {
+            data_payload = line.substr(5);
+            while (!data_payload.empty() && data_payload.front() == ' ') data_payload.remove_prefix(1);
+            while (!data_payload.empty() && data_payload.back() == '\r') data_payload.remove_suffix(1);
+        }
+        pos = line_end == event_data.size() ? event_data.size() : line_end + 1;
+    }
+
+    if (source_format_ == protocol::Format::Anthropic) return event_type == "message_stop";
+    if (data_payload == "[DONE]") return true;
+
+    rapidjson::Document document;
+    document.Parse(data_payload.data(), data_payload.size());
+    if (document.HasParseError() || !document.IsObject()) return false;
+    if (source_format_ == protocol::Format::OpenAIResponses) {
+        return document.HasMember("type") && document["type"].IsString()
+            && document["type"].GetString() == std::string_view("response.completed");
+    }
+    if (source_format_ == protocol::Format::OpenAIChatCompletions
+        && document.HasMember("choices") && document["choices"].IsArray()) {
+        for (const auto& choice : document["choices"].GetArray()) {
+            if (choice.IsObject() && choice.HasMember("finish_reason")
+                && choice["finish_reason"].IsString()
+                && std::strlen(choice["finish_reason"].GetString()) > 0) return true;
+        }
+    }
+    if (source_format_ == protocol::Format::Gemini
+        && document.HasMember("candidates") && document["candidates"].IsArray()) {
+        for (const auto& candidate : document["candidates"].GetArray()) {
+            if (candidate.IsObject() && candidate.HasMember("finishReason")
+                && candidate["finishReason"].IsString()
+                && std::strlen(candidate["finishReason"].GetString()) > 0) return true;
+        }
+    }
+    return false;
 }
 
 void StreamPipe::extract_usage_from_event(std::string_view event_data,
@@ -382,8 +468,10 @@ bool StreamPipe::inject_keepalive(WriteFn& write, uint64_t last_write_ms) {
 
     // SSE keepalive: comment line (ignored by SSE clients)
     static constexpr char keepalive[] = ": keepalive\n\n";
-    write(keepalive, sizeof(keepalive) - 1);
-    return true;
+    // Return true only when the client write failed.  A zero-length write is
+    // a disconnect too; treating it as success would spin until the upstream
+    // timeout while the client is already gone.
+    return write(keepalive, sizeof(keepalive) - 1) <= 0;
 }
 
 }  // namespace gateway::forwarder

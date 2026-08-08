@@ -845,6 +845,29 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             "gateway.after_provider_completion", request_id);
         const auto malformed_provider_usage = forward_result.malformed_usage;
 
+        // A client cancellation is not evidence that the Provider was never
+        // charged.  Once forwarding evidence exists, retain the hold unless a
+        // complete stream was observed; never retry a request after output or
+        // an ambiguous partial stream.
+        if ((forward_result.client_disconnect && !forward_result.output_started)
+            || forward_result.stream_incomplete) {
+            auto abort_ack = dispatch_.abort(
+                dispatch_result.lease_token,
+                forward_result.client_disconnect ? "client_disconnect" : "incomplete_provider_stream",
+                dispatch::LeaseAbortDisposition::Unknown,
+                forward_result.provider_status_code);
+            if (!abort_ack.acknowledged()) {
+                LOG_ERROR("Ambiguous streaming abort failed for request {} lease {}: {}",
+                          request_id, dispatch_result.lease_token, abort_ack.error_code);
+            }
+            terminal_abort = true;
+            metrics.upstream_errors.fetch_add(1, std::memory_order_relaxed);
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            if (forward_result.stream_incomplete && !forward_result.output_started) {
+                resp.content_type = "application/json";
+            }
+        }
+
         if (malformed_provider_usage) {
             dispatch_.report_upstream_error(dispatch::ErrorReportData{
                 .account_id = target.account_id,
@@ -1031,10 +1054,12 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         .video_duration_seconds = media_response_usage.video_duration_seconds > 0
             ? media_response_usage.video_duration_seconds
             : media_request_usage.video_duration_seconds,
+        .disconnect_reason = forward_result.disconnect_reason,
         .provider_usage_json = forward_result.provider_usage_json,
         .reasoning_tokens = forward_result.reasoning_tokens,
         .service_tier = forward_result.service_tier,
         .upstream_endpoint = dispatch_result.upstream.upstream_path,
+        .cancellation_reason = forward_result.cancellation_reason,
         .media_operation_id = dispatch_result.upstream.media_operation_id,
         .pricing_version = "v1",
         .response_status_code = persist_response ? forward_result.status_code : 0,
