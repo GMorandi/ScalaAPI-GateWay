@@ -25,6 +25,7 @@ enum class Method : uint8_t {
     Abort = 3,
     ReportUpstreamError = 4,
     MediaOperation = 5,
+    RecordLeaseEvidence = 6,
 };
 
 struct CapnpDispatchClient::Impl {
@@ -176,7 +177,7 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     builder.setCachedAuthVersion(req.cached_auth_version);
     builder.setEndpoint(static_cast<::DispatchRequest::EndpointKind>(req.endpoint));
     builder.setMetadataUserId(req.metadata_user_id);
-    builder.setProtocolVersion(2);
+    builder.setProtocolVersion(3);
     builder.setStream(req.stream);
     builder.setOperation(req.operation);
     builder.setInboundFormat(req.inbound_format);
@@ -210,8 +211,8 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     std::memcpy(aligned.data(), resp_bytes.data() + 1, resp_bytes.size() - 1);
     capnp::FlatArrayMessageReader reader(kj::arrayPtr(aligned.data(), aligned.size()));
     auto resp = reader.getRoot<::DispatchResponse>();
-    if (resp.getProtocolVersion() != 2) {
-        LOG_ERROR("Dispatch protocol version mismatch: expected=2 received={}",
+    if (resp.getProtocolVersion() != 3) {
+        LOG_ERROR("Dispatch protocol version mismatch: expected=3 received={}",
                   resp.getProtocolVersion());
         result.reject_message = "dispatch protocol version mismatch";
         return result;
@@ -398,14 +399,36 @@ RpcAck CapnpDispatchClient::report_usage(const UsageReportData& report) {
     return parse_ack(impl_->exchange(Method::ReportUsage, words), 0x82);
 }
 
+RpcAck CapnpDispatchClient::record_lease_evidence(
+    const std::string& lease_token, LeaseEvidenceStage stage,
+    const std::string& detail) {
+    std::lock_guard<photon::mutex> guard(impl_->mutex);
+
+    capnp::MallocMessageBuilder msg;
+    auto builder = msg.initRoot<::LeaseEvidence>();
+    builder.setLeaseToken(lease_token);
+    builder.setStage(stage == LeaseEvidenceStage::OutputStarted
+        ? ::LeaseEvidence::Stage::OUTPUT_STARTED : ::LeaseEvidence::Stage::FORWARDED);
+    builder.setSource("gateway");
+    builder.setDetail(detail);
+
+    auto words = capnp::messageToFlatArray(msg);
+    return parse_ack(impl_->exchange(Method::RecordLeaseEvidence, words), 0x86);
+}
+
 RpcAck CapnpDispatchClient::abort(const std::string& lease_token,
-                                  const std::string& reason) {
+                                  const std::string& reason,
+                                  LeaseAbortDisposition disposition,
+                                  int provider_status_code) {
     std::lock_guard<photon::mutex> guard(impl_->mutex);
 
     capnp::MallocMessageBuilder msg;
     auto builder = msg.initRoot<::AbortRequest>();
     builder.setLeaseToken(lease_token);
     builder.setReason(reason);
+    builder.setDisposition(disposition == LeaseAbortDisposition::Unknown
+        ? ::AbortRequest::Disposition::UNKNOWN : ::AbortRequest::Disposition::NO_CHARGE);
+    builder.setProviderStatusCode(provider_status_code);
 
     auto words = capnp::messageToFlatArray(msg);
     return parse_ack(impl_->exchange(Method::Abort, words), 0x83);

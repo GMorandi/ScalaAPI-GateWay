@@ -319,18 +319,38 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
         http_client->common_headers()->insert("Sec-WebSocket-Protocol", target.websocket_protocol);
     if (!req.user_agent.empty()) http_client->set_user_agent(req.user_agent);
     if (!target.proxy_url.empty()) http_client->set_proxy(target.proxy_url);
+    const auto forwarded_ack = dispatch_.record_lease_evidence(
+        dispatched.lease_token, dispatch::LeaseEvidenceStage::Forwarded,
+        "realtime Provider handshake authorized");
+    if (!forwarded_ack.acknowledged()) {
+        delete http_client;
+        dispatch_.abort(dispatched.lease_token, "forward_evidence_unavailable");
+        client.close(photon::net::http::WebSocketCloseCode::InternalServerError,
+                     "dispatch evidence unavailable");
+        return -1;
+    }
     auto* upstream = photon::net::http::websocket_connect(http_client, upstream_url, 30'000'000);
     if (!upstream) {
         delete http_client;
-        dispatch_.abort(dispatched.lease_token, "realtime_connect_failed");
+        dispatch_.abort(dispatched.lease_token, "realtime_connect_failed",
+            dispatch::LeaseAbortDisposition::Unknown);
         client.send_text(R"({"type":"error","error":{"code":"provider_unavailable","message":"Realtime provider handshake failed"}})");
         client.close(photon::net::http::WebSocketCloseCode::InternalServerError,
                      "upstream handshake failed");
         return -1;
     }
-    if (first_opcode == WebSocketOpcode::Binary)
-        upstream->send_binary(first.data(), first.size());
-    else upstream->send_text(first);
+    const auto initial_send = first_opcode == WebSocketOpcode::Binary
+        ? upstream->send_binary(first.data(), first.size()) : upstream->send_text(first);
+    if (initial_send <= 0) {
+        dispatch_.abort(dispatched.lease_token, "realtime_initial_send_failed",
+            dispatch::LeaseAbortDisposition::Unknown);
+        upstream->close(photon::net::http::WebSocketCloseCode::InternalServerError);
+        delete upstream;
+        delete http_client;
+        client.close(photon::net::http::WebSocketCloseCode::InternalServerError,
+                     "upstream send failed");
+        return -1;
+    }
 
     std::atomic<bool> done{false};
     std::atomic<bool> client_disconnected{false};
@@ -339,6 +359,7 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
     std::atomic<int> output_tokens{0};
     std::atomic<int> cache_tokens{0};
     std::atomic<int> reasoning_tokens{0};
+    std::atomic<bool> output_evidence_recorded{false};
     auto upstream_thread = photon::thread_enable_join(photon::thread_create11([&] {
         std::string buffer(kMaxFrame, '\0');
         while (!done.load(std::memory_order_relaxed)) {
@@ -346,12 +367,23 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
             auto n = upstream->recv_frame(buffer.data(), buffer.size(), &opcode, 30'000'000);
             if (n <= 0 || opcode == WebSocketOpcode::Close) break;
             ++frames;
-            if (opcode == WebSocketOpcode::Binary) client.send_binary(buffer.data(), static_cast<size_t>(n));
+            ssize_t sent = -1;
+            if (opcode == WebSocketOpcode::Binary)
+                sent = client.send_binary(buffer.data(), static_cast<size_t>(n));
             else if (opcode == WebSocketOpcode::Text) {
                 auto frame = std::string_view(buffer.data(), static_cast<size_t>(n));
                 accumulate_realtime_usage(frame, input_tokens, output_tokens,
                     cache_tokens, reasoning_tokens);
-                client.send_text(frame);
+                sent = client.send_text(frame);
+            }
+            if (sent > 0 && !output_evidence_recorded.exchange(true)) {
+                const auto ack = dispatch_.record_lease_evidence(
+                    dispatched.lease_token, dispatch::LeaseEvidenceStage::OutputStarted,
+                    "first realtime frame written to client");
+                if (!ack.acknowledged()) {
+                    LOG_ERROR("Realtime output evidence failed for request {} lease {}: {}",
+                              request_id, dispatched.lease_token, ack.error_code);
+                }
             }
         }
         done.store(true, std::memory_order_relaxed);
@@ -752,6 +784,24 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             ? forwarder::ProtocolMode::CrossProtocol
             : forwarder::ProtocolMode::Passthrough;
 
+        const auto forwarded_ack = dispatch_.record_lease_evidence(
+            dispatch_result.lease_token, dispatch::LeaseEvidenceStage::Forwarded,
+            "Provider transport authorized");
+        if (!forwarded_ack.acknowledged()) {
+            const auto abort_ack = dispatch_.abort(dispatch_result.lease_token,
+                "forward_evidence_unavailable");
+            if (!abort_ack.acknowledged()) {
+                LOG_ERROR("Safe abort after forwarding evidence failure failed for request {} lease {}: {}",
+                          request_id, dispatch_result.lease_token, abort_ack.error_code);
+            }
+            forward_result.status_code = 503;
+            forward_result.content_type = "application/json";
+            forward_result.body = R"({"error":{"type":"platform_unavailable","message":"Unable to persist Provider dispatch evidence"}})";
+            terminal_abort = true;
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+
         forwarder::ForwardRequest forward_request{
             .method = req.method,
             .body = upstream_body,
@@ -777,6 +827,15 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 if (!has_request_id) resp.headers.emplace_back("X-Request-ID", request_id);
                 resp.stream = is_stream;
             },
+            .output_started = [&] {
+                const auto ack = dispatch_.record_lease_evidence(
+                    dispatch_result.lease_token, dispatch::LeaseEvidenceStage::OutputStarted,
+                    "first response bytes written to client");
+                if (!ack.acknowledged()) {
+                    LOG_ERROR("Output evidence failed for request {} lease {}: {}",
+                              request_id, dispatch_result.lease_token, ack.error_code);
+                }
+            },
         };
         forward_result = forwarder_->forward(target, forward_request, stream_mode);
         const auto malformed_provider_usage = forward_result.malformed_usage;
@@ -789,7 +848,9 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 .request_id = request_id,
             });
             const auto abort_ack = dispatch_.abort(
-                dispatch_result.lease_token, "malformed_provider_usage");
+                dispatch_result.lease_token, "malformed_provider_usage",
+                dispatch::LeaseAbortDisposition::Unknown,
+                forward_result.provider_status_code);
             if (!abort_ack.acknowledged()) {
                 LOG_ERROR("Malformed usage abort failed for request {} lease {}: {}",
                           request_id, dispatch_result.lease_token, abort_ack.error_code);
@@ -804,7 +865,10 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         if (forward_result.status_code >= 400 && !malformed_provider_usage) {
             const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start).count();
-            auto retryable = spec.can_failover && !forward_result.output_started
+            const auto explicit_provider_rejection =
+                forwarder::is_explicit_provider_rejection(forward_result);
+            auto retryable = explicit_provider_rejection && spec.can_failover
+                && !forward_result.output_started
                 && elapsed_ms < retry_policy.max_elapsed_ms
                 && retry_policy.is_retryable_status(forward_result.status_code);
             auto action = retryable
@@ -818,7 +882,10 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 .request_id = request_id,
             };
             if (retryable) dispatch_.report_upstream_error(err);
-            auto abort_ack = dispatch_.abort(dispatch_result.lease_token, "upstream_failure");
+            auto abort_ack = dispatch_.abort(dispatch_result.lease_token, "upstream_failure",
+                explicit_provider_rejection ? dispatch::LeaseAbortDisposition::NoCharge
+                                            : dispatch::LeaseAbortDisposition::Unknown,
+                forward_result.provider_status_code);
             if (!abort_ack.acknowledged()) {
                 LOG_ERROR("Abort failed for request {} lease {}: {}",
                           request_id, dispatch_result.lease_token, abort_ack.error_code);
@@ -855,7 +922,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 resp.body = std::move(converted.body);
             } else {
                 auto abort_ack = dispatch_.abort(dispatch_result.lease_token,
-                    "response_conversion_failed");
+                    "response_conversion_failed", dispatch::LeaseAbortDisposition::Unknown,
+                    forward_result.provider_status_code);
                 if (!abort_ack.acknowledged())
                     LOG_ERROR("Conversion abort failed for request {}: {}",
                         request_id, abort_ack.error_code);
@@ -899,7 +967,9 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             .progress = media_status == "running" ? 0 : 100,
         });
         if (!operation.accepted) {
-            dispatch_.abort(dispatch_result.lease_token, "media_operation_persist_failed");
+            dispatch_.abort(dispatch_result.lease_token, "media_operation_persist_failed",
+                dispatch::LeaseAbortDisposition::Unknown,
+                forward_result.provider_status_code);
             resp.status_code = operation.status_code > 0 ? operation.status_code : 503;
             resp.body = R"({"error":{"type":"media_operation_error","message":"Unable to persist media operation state"}})";
             terminal_abort = true;

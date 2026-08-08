@@ -31,6 +31,26 @@ TEST(ProviderResponseValidation, IgnoresNonJsonErrorAndNoContentBodies) {
         200, "image/png", "not-json"));
 }
 
+TEST(ProviderResponseEvidence, OnlyExplicitProviderErrorsProveNoCharge) {
+    gateway::forwarder::ForwardResult provider_rejection{
+        .status_code = 429,
+        .provider_response_received = true,
+        .provider_status_code = 429,
+    };
+    EXPECT_TRUE(gateway::forwarder::is_explicit_provider_rejection(provider_rejection));
+
+    auto malformed_success = provider_rejection;
+    malformed_success.status_code = 502;
+    malformed_success.provider_status_code = 200;
+    EXPECT_FALSE(gateway::forwarder::is_explicit_provider_rejection(malformed_success));
+
+    auto transport_failure = provider_rejection;
+    transport_failure.status_code = 502;
+    transport_failure.provider_response_received = false;
+    transport_failure.provider_status_code = 0;
+    EXPECT_FALSE(gateway::forwarder::is_explicit_provider_rejection(transport_failure));
+}
+
 TEST(OpenAIParse, BasicRequest) {
     std::string body = R"({
         "model": "gpt-4",

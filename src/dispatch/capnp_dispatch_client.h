@@ -167,6 +167,16 @@ struct RpcAck {
     bool acknowledged() const { return accepted || duplicate; }
 };
 
+enum class LeaseEvidenceStage {
+    Forwarded,
+    OutputStarted,
+};
+
+enum class LeaseAbortDisposition {
+    NoCharge,
+    Unknown,
+};
+
 struct ErrorReportData {
     int64_t account_id = 0;
     int status_code = 0;
@@ -183,7 +193,12 @@ public:
     DispatchResult dispatch(const DispatchRequest& req);
     MediaOperationResult media_operation(const MediaOperationRequest& req);
     RpcAck report_usage(const UsageReportData& report);
-    RpcAck abort(const std::string& lease_token, const std::string& reason);
+    RpcAck record_lease_evidence(const std::string& lease_token,
+                                 LeaseEvidenceStage stage,
+                                 const std::string& detail = "");
+    RpcAck abort(const std::string& lease_token, const std::string& reason,
+                 LeaseAbortDisposition disposition = LeaseAbortDisposition::NoCharge,
+                 int provider_status_code = 0);
     RpcAck report_upstream_error(const ErrorReportData& error);
     bool is_connected();
 

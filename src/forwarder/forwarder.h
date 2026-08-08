@@ -18,6 +18,7 @@ using StreamWriteFn = std::function<ssize_t(const char*, size_t)>;
 using ResponseStartFn = std::function<void(
     int, std::string_view,
     const std::vector<std::pair<std::string, std::string>>&)>;
+using OutputStartedFn = std::function<void()>;
 
 struct ForwardRequest {
     std::string_view method;
@@ -33,6 +34,7 @@ struct ForwardRequest {
     protocol::Format stream_target = protocol::Format::Anthropic;
     StreamWriteFn stream_write;
     ResponseStartFn response_start;
+    OutputStartedFn output_started;
 };
 
 struct ForwardResult {
@@ -47,6 +49,8 @@ struct ForwardResult {
     int duration_ms = 0;
     bool client_disconnect = false;
     bool output_started = false;
+    bool provider_response_received = false;
+    int provider_status_code = 0;
     bool malformed_usage = false;
     std::string content_type;
     std::vector<std::pair<std::string, std::string>> response_headers;
@@ -56,6 +60,8 @@ struct ForwardResult {
     std::string service_tier;
     std::string error;
 };
+
+bool is_explicit_provider_rejection(const ForwardResult& result);
 
 struct ForwardConfig {
     // Applies to non-streaming upstream calls. Streaming calls use the total

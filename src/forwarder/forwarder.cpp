@@ -63,6 +63,10 @@ bool has_invalid_success_payload(int status_code, std::string_view content_type,
     return document.HasParseError();
 }
 
+bool is_explicit_provider_rejection(const ForwardResult& result) {
+    return result.provider_response_received && result.provider_status_code >= 400;
+}
+
 static bool hop_by_hop(std::string_view name) {
     const auto key = lower(name);
     return key == "connection" || key == "keep-alive" || key == "proxy-authenticate"
@@ -247,6 +251,8 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
     }
 
     result.status_code = op->resp.status_code();
+    result.provider_response_received = true;
+    result.provider_status_code = result.status_code;
     result.content_type = std::string(op->resp.headers["Content-Type"]);
     for (auto header : op->resp.headers) {
         if (safe_response_header(header.first, target))
@@ -330,12 +336,18 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
 
         std::string accumulated;
         auto client_write = [&](const char* data, size_t len) -> ssize_t {
-            result.output_started = true;
+            ssize_t written;
             if (request.stream_write) {
-                return request.stream_write(data, len);
+                written = request.stream_write(data, len);
+            } else {
+                accumulated.append(data, len);
+                written = static_cast<ssize_t>(len);
             }
-            accumulated.append(data, len);
-            return static_cast<ssize_t>(len);
+            if (written > 0 && !result.output_started) {
+                result.output_started = true;
+                if (request.output_started) request.output_started();
+            }
+            return written;
         };
 
         auto stream_result = pipe.run(upstream_read, client_write);

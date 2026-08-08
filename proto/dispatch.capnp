@@ -5,9 +5,10 @@ using Types = import "types.capnp";
 interface GatewayDispatch {
   dispatch @0 (request: DispatchRequest) -> (response: DispatchResponse);
   reportUsage @1 (report: Types.UsageReport) -> (ack: WriteAck);
-  abort @2 (leaseToken: Text, reason: Text) -> (ack: WriteAck);
+  abort @2 (request: AbortRequest) -> (ack: WriteAck);
   reportUpstreamError @3 (report: Types.ErrorReport) -> (ack: WriteAck);
   mediaOperation @4 (request: MediaOperationRequest) -> (response: MediaOperationResponse);
+  recordLeaseEvidence @5 (evidence: LeaseEvidence) -> (ack: WriteAck);
 }
 
 struct WriteAck {
@@ -110,6 +111,25 @@ struct RejectInfo {
 struct AbortRequest {
   leaseToken @0 :Text;
   reason @1 :Text;
+  disposition @2 :Disposition;
+  providerStatusCode @3 :Int32;
+
+  enum Disposition {
+    noCharge @0;
+    unknown @1;
+  }
+}
+
+struct LeaseEvidence {
+  leaseToken @0 :Text;
+  stage @1 :Stage;
+  source @2 :Text;
+  detail @3 :Text;
+
+  enum Stage {
+    forwarded @0;
+    outputStarted @1;
+  }
 }
 
 struct MediaOperationRequest {
