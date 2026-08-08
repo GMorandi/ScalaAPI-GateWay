@@ -2,6 +2,7 @@
 add_executable(unit_tests
     unit/test_protocol.cpp
     unit/test_auth.cpp
+    unit/test_invalidation.cpp
     unit/test_retry_failover.cpp
     unit/test_usage_collector.cpp
     unit/test_router.cpp
