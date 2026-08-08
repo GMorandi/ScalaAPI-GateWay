@@ -81,10 +81,16 @@ void UsageReporter::run_loop() {
             report.response_content_type = std::move(ev.response_content_type);
             report.response_body = std::move(ev.response_body);
             auto ack = impl_->dispatch->report_usage(report);
-            if (ack.acknowledged()) {
+            if (ack.acknowledged() || !ack.retryable) {
                 impl_->collector->acknowledge(report.lease_token);
                 platform::global_metrics().usage_events_buffered.fetch_sub(
                     1, std::memory_order_relaxed);
+                if (!ack.acknowledged()) {
+                    platform::global_metrics().usage_report_failures.fetch_add(
+                        1, std::memory_order_relaxed);
+                    LOG_WARN("Discarded terminal usage report: lease={} error={}",
+                             report.lease_token, ack.error_code);
+                }
                 continue;
             }
             platform::global_metrics().usage_report_failures.fetch_add(
