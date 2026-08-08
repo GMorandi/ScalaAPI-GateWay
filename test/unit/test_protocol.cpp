@@ -570,6 +570,31 @@ TEST(StreamPipe, RequiresTerminalEventBeforeTreatingProviderEofAsComplete) {
     EXPECT_FALSE(result.terminal_event_seen);
 }
 
+TEST(StreamPipe, TreatsIncompleteChunkedBodyAsProviderDisconnect) {
+    const std::string chunk =
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+    bool read_once = false;
+    gateway::forwarder::StreamPipe pipe({}, gateway::forwarder::ProtocolMode::Passthrough,
+                                        Format::OpenAIChatCompletions,
+                                        Format::OpenAIChatCompletions);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (read_once) {
+                errno = 0; // Photon uses -1/errno=0 for an incomplete chunked body.
+                return -1;
+            }
+            read_once = true;
+            if (chunk.size() > capacity) return -1;
+            std::memcpy(out, chunk.data(), chunk.size());
+            return static_cast<ssize_t>(chunk.size());
+        },
+        [](const char*, size_t size) -> ssize_t { return static_cast<ssize_t>(size); });
+    EXPECT_FALSE(result.completed);
+    EXPECT_TRUE(result.incomplete);
+    EXPECT_TRUE(result.provider_disconnect);
+    EXPECT_FALSE(result.terminal_event_seen);
+}
+
 TEST(StreamPipe, RecognizesOpenAITerminalEvent) {
     const std::vector<std::string> chunks = {
         "data: {\"choices\":[{\"delta\":{\"content\":\"done\"}}]}\n\n",

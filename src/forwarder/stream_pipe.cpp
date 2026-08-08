@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <cerrno>
 #include <algorithm>
 #include <limits>
 #include <rapidjson/document.h>
@@ -18,6 +19,13 @@ namespace gateway::forwarder {
 static uint64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static bool provider_disconnect_errno(int error) {
+    // Photon reports an incomplete chunked body as -1 while preserving the
+    // socket's zero errno.  Transport resets use the same terminal meaning.
+    return error == 0 || error == ECONNRESET || error == ECONNABORTED
+        || error == EPIPE || error == ENOTCONN;
 }
 
 static bool valid_usage_count(const rapidjson::Value& value) {
@@ -84,6 +92,11 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
         ssize_t n = read(read_buf_.data(), read_buf_.size());
 
         if (n < 0) {
+            if (provider_disconnect_errno(errno)) {
+                result.incomplete = true;
+                result.provider_disconnect = true;
+                break;
+            }
             // Timeout or error
             auto since_last = now_ms() - last_data_ms;
             if (!first_token_received && since_last > config_.first_token_timeout_ms) {
@@ -194,6 +207,11 @@ StreamResult StreamPipe::run_transform(ReadFn& read, WriteFn& write) {
         ssize_t n = read(read_buf_.data(), read_buf_.size());
 
         if (n < 0) {
+            if (provider_disconnect_errno(errno)) {
+                result.incomplete = true;
+                result.provider_disconnect = true;
+                break;
+            }
             auto since_last = now_ms() - last_data_ms;
             if (!first_token_received && since_last > config_.first_token_timeout_ms) {
                 result.incomplete = true;
