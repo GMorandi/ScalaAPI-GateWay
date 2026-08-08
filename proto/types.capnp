@@ -147,6 +147,9 @@ struct UsageReport {
   cancellationReason @34 :Text;
   mediaOperationId @35 :Text;
   pricingVersion @36 :Text;
+  responseStatusCode @37 :Int32;
+  responseContentType @38 :Text;
+  responseBody @39 :Text;
 }
 
 struct ErrorReport {

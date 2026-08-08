@@ -677,6 +677,17 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                             return 0;
                         }
                     }
+                    if (dispatch_result.replay_status_code > 0
+                        && !dispatch_result.replay_body.empty()) {
+                        resp.status_code = dispatch_result.replay_status_code;
+                        resp.content_type = dispatch_result.replay_content_type.empty()
+                            ? "application/json" : dispatch_result.replay_content_type;
+                        resp.body = dispatch_result.replay_body;
+                        resp.stream = false;
+                        resp.headers.emplace_back("Cache-Control", "no-store");
+                        metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+                        return 0;
+                    }
                 }
                 resp.status_code = dispatch_result.reject_code <= 1 ? 401
                     : dispatch_result.reject_code == 2 ? 402
@@ -907,6 +918,9 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
     }
 
     // --- Step 8: Report usage (fire-and-forget) ---
+    const bool persist_response = !is_stream && !terminal_abort && !defer_media_usage
+        && !media_response_overridden && forward_result.status_code >= 200
+        && forward_result.status_code < 400 && resp.body.size() <= 4 * 1024 * 1024;
     auto elapsed = std::chrono::steady_clock::now() - start;
     auto& upstream = dispatch_result.upstream;
     const auto media_response_usage = protocol::Converter::parse_media_response(
@@ -948,6 +962,9 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         .upstream_endpoint = dispatch_result.upstream.upstream_path,
         .media_operation_id = dispatch_result.upstream.media_operation_id,
         .pricing_version = "v1",
+        .response_status_code = persist_response ? forward_result.status_code : 0,
+        .response_content_type = persist_response ? resp.content_type : "",
+        .response_body = persist_response ? resp.body : "",
     };
     if (!terminal_abort && !defer_media_usage) {
         try {
@@ -989,6 +1006,9 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 .cancellation_reason = event.cancellation_reason,
                 .media_operation_id = event.media_operation_id,
                 .pricing_version = event.pricing_version,
+                .response_status_code = event.response_status_code,
+                .response_content_type = event.response_content_type,
+                .response_body = event.response_body,
             };
             auto ack = dispatch_.report_usage(fallback);
             if (!ack.acknowledged()) {

@@ -77,6 +77,9 @@ void UsageReporter::run_loop() {
             report.cancellation_reason = std::move(ev.cancellation_reason);
             report.media_operation_id = std::move(ev.media_operation_id);
             report.pricing_version = std::move(ev.pricing_version);
+            report.response_status_code = ev.response_status_code;
+            report.response_content_type = std::move(ev.response_content_type);
+            report.response_body = std::move(ev.response_body);
             auto ack = impl_->dispatch->report_usage(report);
             if (ack.acknowledged()) {
                 impl_->collector->acknowledge(report.lease_token);

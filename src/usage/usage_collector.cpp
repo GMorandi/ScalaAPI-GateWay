@@ -112,6 +112,9 @@ UsageCollector::UsageCollector(std::string database_path)
             cancellation_reason TEXT NOT NULL DEFAULT '',
             media_operation_id TEXT NOT NULL DEFAULT '',
             pricing_version TEXT NOT NULL DEFAULT '',
+            response_status_code INTEGER NOT NULL DEFAULT 0,
+            response_content_type TEXT NOT NULL DEFAULT '',
+            response_body TEXT NOT NULL DEFAULT '',
             created_at INTEGER NOT NULL DEFAULT (unixepoch())
         )
     )SQL");
@@ -131,6 +134,9 @@ UsageCollector::UsageCollector(std::string database_path)
     add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN cancellation_reason TEXT NOT NULL DEFAULT ''");
     add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN media_operation_id TEXT NOT NULL DEFAULT ''");
     add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN pricing_version TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN response_status_code INTEGER NOT NULL DEFAULT 0");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN response_content_type TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN response_body TEXT NOT NULL DEFAULT ''");
 }
 
 UsageCollector::~UsageCollector() {
@@ -152,8 +158,9 @@ void UsageCollector::record(UsageEvent event) {
             image_size, video_count, video_resolution, video_duration_seconds,
             realtime_duration_ms, realtime_frames, disconnect_reason,
             provider_usage_json, reasoning_tokens, service_tier, upstream_endpoint,
-            cancellation_reason, media_operation_id, pricing_version)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            cancellation_reason, media_operation_id, pricing_version,
+            response_status_code, response_content_type, response_body)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(lease_token) DO NOTHING
     )SQL";
     sqlite3_stmt* statement = nullptr;
@@ -197,6 +204,9 @@ void UsageCollector::record(UsageEvent event) {
     bind_text(event.cancellation_reason);
     bind_text(event.media_operation_id);
     bind_text(event.pricing_version);
+    sqlite3_bind_int(statement, i++, event.response_status_code);
+    bind_text(event.response_content_type);
+    bind_text(event.response_body);
 
     auto result = sqlite3_step(statement);
     sqlite3_finalize(statement);
@@ -219,7 +229,8 @@ std::vector<UsageEvent> UsageCollector::peek(size_t limit) {
                video_duration_seconds, realtime_duration_ms, realtime_frames,
                disconnect_reason, provider_usage_json, reasoning_tokens,
                service_tier, upstream_endpoint, cancellation_reason,
-               media_operation_id, pricing_version
+               media_operation_id, pricing_version, response_status_code,
+               response_content_type, response_body
         FROM usage_outbox ORDER BY created_at, rowid LIMIT ?
     )SQL";
     sqlite3_stmt* statement = nullptr;
@@ -263,6 +274,9 @@ std::vector<UsageEvent> UsageCollector::peek(size_t limit) {
         event.cancellation_reason = text_column(statement, 30);
         event.media_operation_id = text_column(statement, 31);
         event.pricing_version = text_column(statement, 32);
+        event.response_status_code = sqlite3_column_int(statement, 33);
+        event.response_content_type = text_column(statement, 34);
+        event.response_body = text_column(statement, 35);
         events.push_back(std::move(event));
     }
     sqlite3_finalize(statement);

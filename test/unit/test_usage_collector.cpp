@@ -115,6 +115,31 @@ TEST(UsageCollector, EventFieldsPreserved) {
     EXPECT_FALSE(e.client_disconnect);
 }
 
+TEST(UsageCollector, ResponseReplayFieldsSurviveDurableOutbox) {
+    auto path = "/tmp/gateway-usage-response-" + std::to_string(::getpid()) + ".db";
+    std::filesystem::remove(path);
+    {
+        UsageCollector collector(path);
+        auto event = make_event(78);
+        event.lease_token = "lease-response";
+        event.response_status_code = 201;
+        event.response_content_type = "application/json";
+        event.response_body = "{\"id\":\"response-1\"}";
+        collector.record(std::move(event));
+    }
+    {
+        UsageCollector collector(path);
+        auto events = collector.peek();
+        ASSERT_EQ(events.size(), 1u);
+        EXPECT_EQ(events[0].response_status_code, 201);
+        EXPECT_EQ(events[0].response_content_type, "application/json");
+        EXPECT_EQ(events[0].response_body, "{\"id\":\"response-1\"}");
+    }
+    std::filesystem::remove(path);
+    std::filesystem::remove(path + "-wal");
+    std::filesystem::remove(path + "-shm");
+}
+
 TEST(UsageCollector, MultipleDrainCycles) {
     UsageCollector collector;
     for (int cycle = 0; cycle < 5; ++cycle) {

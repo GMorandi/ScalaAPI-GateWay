@@ -41,6 +41,9 @@ struct UsageEvent {
     std::string cancellation_reason;
     std::string media_operation_id;
     std::string pricing_version;
+    int response_status_code = 0;
+    std::string response_content_type;
+    std::string response_body;
 };
 
 class UsageCollector {

@@ -237,6 +237,9 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
         result.reject_message = reject.getMessage();
         result.reject_code = static_cast<int>(reject.getCode());
     }
+    result.replay_status_code = resp.getReplayStatusCode();
+    result.replay_content_type = resp.getReplayContentType();
+    result.replay_body = resp.getReplayBody();
 
     if (resp.hasWaitPlan()) {
         result.wait_timeout_ms = resp.getWaitPlan().getTimeoutMs();
@@ -387,6 +390,9 @@ RpcAck CapnpDispatchClient::report_usage(const UsageReportData& report) {
     builder.setCancellationReason(report.cancellation_reason);
     builder.setMediaOperationId(report.media_operation_id);
     builder.setPricingVersion(report.pricing_version);
+    builder.setResponseStatusCode(report.response_status_code);
+    builder.setResponseContentType(report.response_content_type);
+    builder.setResponseBody(report.response_body);
 
     auto words = capnp::messageToFlatArray(msg);
     return parse_ack(impl_->exchange(Method::ReportUsage, words), 0x82);

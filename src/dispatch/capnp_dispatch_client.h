@@ -99,6 +99,9 @@ struct DispatchResult {
     std::string reject_message;
     int reject_code = 0;
     int wait_timeout_ms = 0;
+    int replay_status_code = 0;
+    std::string replay_content_type;
+    std::string replay_body;
 };
 
 struct MediaOperationResult {
@@ -150,6 +153,9 @@ struct UsageReportData {
     std::string cancellation_reason;
     std::string media_operation_id;
     std::string pricing_version;
+    int response_status_code = 0;
+    std::string response_content_type;
+    std::string response_body;
 };
 
 struct RpcAck {

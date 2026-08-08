@@ -67,6 +67,9 @@ struct DispatchResponse {
   reject @5 :RejectInfo;
   leaseToken @6 :Text;
   protocolVersion @7 :UInt16;
+  replayStatusCode @8 :Int32;
+  replayContentType @9 :Text;
+  replayBody @10 :Text;
 
   enum Outcome {
     ok @0;
