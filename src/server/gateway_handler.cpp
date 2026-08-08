@@ -626,6 +626,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
 
     auto dispatch_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
     int dispatch_waits = 0;
+    int dispatch_retry_sequence = 0;
     bool terminal_abort = false;
     while (true) {
         // Dispatch
@@ -812,6 +813,10 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
 
             if (action == forwarder::FailoverController::Action::SwitchAccount ||
                 action == forwarder::FailoverController::Action::Continue) {
+                // The failed lease is terminal. Keep the external idempotency
+                // key stable, but give each internal retry a unique lease ID.
+                dispatch_req.request_id = request_id + ":retry:" +
+                    std::to_string(++dispatch_retry_sequence);
                 dispatch_req.excluded_accounts.assign(
                     failover.failed_accounts().begin(),
                     failover.failed_accounts().end());
