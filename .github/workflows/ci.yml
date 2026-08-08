@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify internal contract digest
+        run: cd proto && sha256sum --check SHA256SUMS
+
       - name: Install dependencies
         run: |
           sudo apt-get update

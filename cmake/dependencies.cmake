@@ -7,7 +7,7 @@ add_compile_options(-fno-strict-aliasing -Wno-error=strict-aliasing)
 FetchContent_Declare(
     photon
     GIT_REPOSITORY https://github.com/alibaba/PhotonLibOS.git
-    GIT_TAG a7c4f7067d93a369fabbfff69c3f42595edbd7fd
+    GIT_TAG 4dd457013c48d17c571fd6d2aa87199ae4c25d4f
     GIT_SHALLOW TRUE
 )
 set(PHOTON_BUILD_TESTING OFF CACHE BOOL "" FORCE)

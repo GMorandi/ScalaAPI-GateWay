@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(sub2api-gateway VERSION 1.0.0 LANGUAGES CXX)
+project(scalaapi-gateway VERSION 1.0.0 LANGUAGES CXX)
 
 find_library(SQLITE3_LIBRARY NAMES sqlite3 libsqlite3.so.0 REQUIRED)
 
@@ -35,7 +35,7 @@ add_custom_command(
     COMMAND ${CAPNP_EXECUTABLE} compile --src-prefix=${CMAKE_SOURCE_DIR}/proto
             -o ${CAPNPC_CXX}:${CAPNP_OUTPUT_DIR}
             ${CAPNP_SCHEMAS}
-    DEPENDS ${CAPNP_SCHEMAS} capnp_tool
+    DEPENDS ${CAPNP_SCHEMAS} capnp_tool capnpc_cpp
     COMMENT "Compiling Cap'n Proto schemas"
 )
 

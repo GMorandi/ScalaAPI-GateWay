@@ -53,8 +53,7 @@ struct UpstreamTarget {
   groupId @8 :Int64;
   billing @9 :BillingContext;
   tlsFingerprint @10 :Bool;
-  # v2 extension fields.  Providers select these rather than relying on
-  # Gateway-side guesses about request shape or supported capabilities.
+  # Provider capability fields are part of the current product contract.
   httpMethod @11 :Text;
   upstreamFormat @12 :Text;
   requestHeaders @13 :List(Header);
@@ -110,8 +109,8 @@ struct AccountProjection {
 
 struct UsageReport {
   leaseToken @0 :Text;
-  # Deprecated identity fields retained for v1 wire compatibility. The server
-  # resolves all of them from leaseToken and ignores client-provided values.
+  # Identity fields are included for audit display; the server resolves the
+  # authoritative values from leaseToken before applying a write.
   requestId @1 :Text;
   apiKeyId @2 :Int64;
   userId @3 :Int64;

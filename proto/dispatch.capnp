@@ -29,7 +29,7 @@ struct DispatchRequest {
   metadataUserId @8 :Text;
   protocolVersion @9 :UInt16;
   stream @10 :Bool;
-  # v2 extension fields.  Existing field numbers are intentionally immutable.
+  # Current product contract extensions.
   operation @11 :Text;
   inboundFormat @12 :Text;
   httpMethod @13 :Text;
