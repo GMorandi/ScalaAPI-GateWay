@@ -13,6 +13,7 @@ namespace gateway::forwarder {
 
 bool has_invalid_success_payload(int status_code, std::string_view content_type,
                                  std::string_view body);
+bool is_event_stream_content_type(std::string_view content_type);
 
 using StreamWriteFn = std::function<ssize_t(const char*, size_t)>;
 using ResponseStartFn = std::function<void(

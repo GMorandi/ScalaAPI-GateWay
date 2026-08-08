@@ -63,6 +63,23 @@ bool has_invalid_success_payload(int status_code, std::string_view content_type,
     return document.HasParseError();
 }
 
+bool is_event_stream_content_type(std::string_view content_type) {
+    auto media_type = lower(content_type);
+    if (auto separator = media_type.find(';'); separator != std::string::npos)
+        media_type.resize(separator);
+    while (!media_type.empty()
+        && std::isspace(static_cast<unsigned char>(media_type.back()))) {
+        media_type.pop_back();
+    }
+    size_t first = 0;
+    while (first < media_type.size()
+        && std::isspace(static_cast<unsigned char>(media_type[first]))) {
+        ++first;
+    }
+    if (first > 0) media_type.erase(0, first);
+    return media_type == "text/event-stream";
+}
+
 bool is_explicit_provider_rejection(const ForwardResult& result) {
     return result.provider_response_received && result.provider_status_code >= 400;
 }
@@ -266,7 +283,7 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
     }
     const bool invalid_stream_content_type = request.stream
         && result.status_code < 400
-        && !lower(result.content_type).starts_with("text/event-stream");
+        && !is_event_stream_content_type(result.content_type);
     if (invalid_stream_content_type) {
         result.status_code = 502;
         result.content_type = "application/json";

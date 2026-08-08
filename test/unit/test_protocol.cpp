@@ -31,6 +31,16 @@ TEST(ProviderResponseValidation, IgnoresNonJsonErrorAndNoContentBodies) {
         200, "image/png", "not-json"));
 }
 
+TEST(ProviderResponseValidation, RequiresExactEventStreamMediaType) {
+    EXPECT_TRUE(gateway::forwarder::is_event_stream_content_type(
+        "text/event-stream; charset=utf-8"));
+    EXPECT_TRUE(gateway::forwarder::is_event_stream_content_type(
+        " TEXT/EVENT-STREAM "));
+    EXPECT_FALSE(gateway::forwarder::is_event_stream_content_type("application/json"));
+    EXPECT_FALSE(gateway::forwarder::is_event_stream_content_type("text/event-streamish"));
+    EXPECT_FALSE(gateway::forwarder::is_event_stream_content_type(""));
+}
+
 TEST(ProviderResponseEvidence, OnlyExplicitProviderErrorsProveNoCharge) {
     gateway::forwarder::ForwardResult provider_rejection{
         .status_code = 429,
