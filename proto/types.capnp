@@ -10,12 +10,12 @@ struct AuthSnapshot {
   ipBlacklist @6 :List(Text);
   user @7 :UserSnapshot;
   group @8 :GroupSnapshot;
-  quota @9 :Float64;
-  quotaUsed @10 :Float64;
+  quota @9 :Int64; # fixed-scale decimal, 1e8 units
+  quotaUsed @10 :Int64; # fixed-scale decimal, 1e8 units
   expiresAt @11 :Int64;
-  rateLimit5h @12 :Float64;
-  rateLimit1d @13 :Float64;
-  rateLimit7d @14 :Float64;
+  rateLimit5h @12 :Int64; # fixed-scale decimal, 1e8 units
+  rateLimit1d @13 :Int64; # fixed-scale decimal, 1e8 units
+  rateLimit7d @14 :Int64; # fixed-scale decimal, 1e8 units
   version @15 :Int64;
 }
 
@@ -23,7 +23,7 @@ struct UserSnapshot {
   id @0 :Int64;
   status @1 :Text;
   role @2 :Text;
-  balance @3 :Float64;
+  balance @3 :Int64; # fixed-scale decimal, 1e8 units
   concurrency @4 :Int32;
   allowedGroups @5 :List(Int64);
   rpmLimit @6 :Int32;
@@ -34,8 +34,8 @@ struct GroupSnapshot {
   platform @1 :Text;
   isExclusive @2 :Bool;
   status @3 :Text;
-  rateMultiplier @4 :Float64;
-  dailyLimitUsd @5 :Float64;
+  rateMultiplier @4 :Int64; # fixed-scale decimal, 1e8 units
+  dailyLimitUsd @5 :Int64; # fixed-scale decimal, 1e8 units
   claudeCodeOnly @6 :Bool;
   fallbackGroupId @7 :Int64;
   modelRoutingEnabled @8 :Bool;
@@ -81,8 +81,8 @@ struct ProxyConfig {
 }
 
 struct BillingContext {
-  rateMultiplier @0 :Float64;
-  holdAmount @1 :Float64;
+  rateMultiplier @0 :Int64; # fixed-scale decimal, 1e8 units
+  holdAmount @1 :Int64; # fixed-scale decimal, 1e8 units
   holdHandle @2 :Text;
   model @3 :Text;
   upstreamModel @4 :Text;
@@ -97,7 +97,7 @@ struct AccountProjection {
   concurrency @4 :Int32;
   currentLoad @5 :Int32;
   schedulable @6 :Bool;
-  rateMultiplier @7 :Float64;
+  rateMultiplier @7 :Int64; # fixed-scale decimal, 1e8 units
   loadFactor @8 :Int32;
   status @9 :Text;
   rateLimitResetAt @10 :Int64;
@@ -165,13 +165,13 @@ struct ModelRoute {
 struct GroupConfig {
   id @0 :Int64;
   platform @1 :Text;
-  rateMultiplier @2 :Float64;
+  rateMultiplier @2 :Int64; # fixed-scale decimal, 1e8 units
   modelRoutingEnabled @3 :Bool;
   modelRoutes @4 :List(ModelRoute);
   claudeCodeOnly @5 :Bool;
   fallbackGroupId @6 :Int64;
   rpmLimit @7 :Int32;
-  peakMultiplier @8 :Float64;
+  peakMultiplier @8 :Int64; # fixed-scale decimal, 1e8 units
   peakStartHour @9 :Int32;
   peakEndHour @10 :Int32;
 }

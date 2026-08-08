@@ -267,7 +267,7 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
         }
 
         if (up.hasBilling()) {
-            result.upstream.rate_multiplier = up.getBilling().getRateMultiplier();
+            result.upstream.rate_multiplier = static_cast<double>(up.getBilling().getRateMultiplier()) / 100000000.0;
             result.upstream.hold_handle = up.getBilling().getHoldHandle();
         }
 
