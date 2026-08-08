@@ -22,16 +22,22 @@ int main(int argc, char** argv) {
     int cores = std::atoi(std::getenv("GATEWAY_CORES") ?: "4");
     uint16_t port = static_cast<uint16_t>(
         std::atoi(std::getenv("GATEWAY_LISTEN_PORT") ?: "8080"));
-    std::string garnet_sock = std::getenv("GARNET_UDS_PATH")
-        ?: "/var/run/sub2api/garnet.sock";
+    std::string garnet_host = std::getenv("GARNET_HOST") ?: "garnet";
+    uint16_t garnet_port = static_cast<uint16_t>(
+        std::atoi(std::getenv("GARNET_PORT") ?: "6379"));
+    std::string garnet_password = std::getenv("GARNET_PASSWORD") ?: "";
+    std::string garnet_tls_value = std::getenv("GARNET_TLS") ?: "false";
+    bool garnet_use_tls = garnet_tls_value == "true" || garnet_tls_value == "1";
+    std::string garnet_server_name = std::getenv("GARNET_SERVER_NAME") ?: garnet_host;
+    std::string garnet_ca_cert_path = std::getenv("GARNET_CA_CERT_PATH") ?: "";
     std::string capnp_sock = std::getenv("CAPNP_UDS_PATH")
-        ?: "/var/run/sub2api/dispatch.sock";
+        ?: "/var/run/scalaapi/dispatch.sock";
     std::string usage_db = std::getenv("GATEWAY_USAGE_DB")
-        ?: "/var/lib/sub2api/usage-outbox.db";
+        ?: "/var/lib/scalaapi/usage-outbox.db";
     std::string trusted_proxy_cidrs = std::getenv("GATEWAY_TRUSTED_PROXY_CIDRS") ?: "";
 
-    LOG_INFO("Starting gateway: cores={} port={} garnet={} capnp={}",
-             cores, port, garnet_sock, capnp_sock);
+    LOG_INFO("Starting gateway: cores={} port={} garnet={}:{} tls={} capnp={}",
+             cores, port, garnet_host, garnet_port, garnet_use_tls, capnp_sock);
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -41,7 +47,12 @@ int main(int argc, char** argv) {
     gateway::platform::CoreRuntimeConfig config{
         .num_cores = cores,
         .listen_port = port,
-        .garnet_uds_path = garnet_sock,
+        .garnet_host = garnet_host,
+        .garnet_port = garnet_port,
+        .garnet_password = garnet_password,
+        .garnet_use_tls = garnet_use_tls,
+        .garnet_server_name = garnet_server_name,
+        .garnet_ca_cert_path = garnet_ca_cert_path,
         .capnp_uds_path = capnp_sock,
         .usage_db_path = usage_db,
         .trusted_proxy_cidrs = trusted_proxy_cidrs,

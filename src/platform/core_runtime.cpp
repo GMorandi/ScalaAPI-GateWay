@@ -59,7 +59,12 @@ void CoreRuntime::start() {
             auto state = std::make_unique<PerCoreState>();
 
             state->garnet = cache::GarnetClient::connect(
-                impl_->config.garnet_uds_path);
+                impl_->config.garnet_host,
+                impl_->config.garnet_port,
+                impl_->config.garnet_password,
+                impl_->config.garnet_use_tls,
+                impl_->config.garnet_server_name,
+                impl_->config.garnet_ca_cert_path);
             state->dispatch = dispatch::CapnpDispatchClient::connect(
                 impl_->config.capnp_uds_path);
             state->usage_dispatch = dispatch::CapnpDispatchClient::connect(

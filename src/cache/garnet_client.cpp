@@ -2,9 +2,10 @@
 #include "platform/logging.h"
 
 #include <sys/socket.h>
-#include <sys/un.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <photon/thread/thread.h>
+#include <openssl/ssl.h>
 
 #include <cstring>
 #include <format>
@@ -13,13 +14,27 @@
 namespace gateway::cache {
 
 struct GarnetClient::Impl {
-    std::string uds_path;
+    std::string host;
+    uint16_t port = 6379;
+    std::string password;
+    bool use_tls = false;
+    std::string server_name;
+    std::string ca_cert_path;
     int fd = -1;
+    SSL_CTX* tls_context = nullptr;
+    SSL* tls = nullptr;
     photon::mutex mutex;
     std::string accum;
     char read_buf[64 * 1024];
 
     void disconnect() {
+        if (tls) {
+            SSL_shutdown(tls);
+            SSL_free(tls);
+        }
+        if (tls_context) SSL_CTX_free(tls_context);
+        tls = nullptr;
+        tls_context = nullptr;
         if (fd >= 0) ::close(fd);
         fd = -1;
         accum.clear();
@@ -27,28 +42,78 @@ struct GarnetClient::Impl {
 
     bool ensure_connected() {
         if (fd >= 0) return true;
-        fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        addrinfo hints{};
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        const auto port_text = std::to_string(port);
+        addrinfo* addresses = nullptr;
+        if (::getaddrinfo(host.c_str(), port_text.c_str(), &hints, &addresses) != 0)
+            return false;
+
+        for (auto* address = addresses; address != nullptr; address = address->ai_next) {
+            fd = ::socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+            if (fd >= 0 && ::connect(fd, address->ai_addr, address->ai_addrlen) == 0)
+                break;
+            disconnect();
+        }
+        ::freeaddrinfo(addresses);
         if (fd < 0) return false;
 
-        struct sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        std::strncpy(addr.sun_path, uds_path.c_str(), sizeof(addr.sun_path) - 1);
-        if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-            disconnect();
-            return false;
-        }
         timeval timeout{3, 0};
         ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-        LOG_INFO("Connected to Garnet at {}", uds_path);
+        if (use_tls && !start_tls()) {
+            disconnect();
+            return false;
+        }
+        if (!password.empty()) {
+            auto auth = std::format("*2\r\n$4\r\nAUTH\r\n${}\r\n{}\r\n",
+                                    password.size(), password);
+            if (!send_command(auth) || !read_response().starts_with("+OK")) {
+                disconnect();
+                return false;
+            }
+        }
+        LOG_INFO("Connected to Garnet at {}:{} tls={}", host, port, use_tls);
         return true;
+    }
+
+    bool start_tls() {
+        tls_context = SSL_CTX_new(TLS_client_method());
+        if (!tls_context) return false;
+        SSL_CTX_set_verify(tls_context, SSL_VERIFY_PEER, nullptr);
+        const auto trust_loaded = ca_cert_path.empty()
+            ? SSL_CTX_set_default_verify_paths(tls_context)
+            : SSL_CTX_load_verify_locations(tls_context, ca_cert_path.c_str(), nullptr);
+        if (trust_loaded != 1) return false;
+
+        tls = SSL_new(tls_context);
+        if (!tls) return false;
+        const auto& expected_name = server_name.empty() ? host : server_name;
+        if (SSL_set_fd(tls, fd) != 1 ||
+            SSL_set_tlsext_host_name(tls, expected_name.c_str()) != 1 ||
+            SSL_set1_host(tls, expected_name.c_str()) != 1 ||
+            SSL_connect(tls) != 1) {
+            return false;
+        }
+        return true;
+    }
+
+    ssize_t write_bytes(const char* data, size_t size) {
+        if (tls) return SSL_write(tls, data, static_cast<int>(size));
+        return ::send(fd, data, size, MSG_NOSIGNAL);
+    }
+
+    ssize_t read_bytes(char* data, size_t size) {
+        if (tls) return SSL_read(tls, data, static_cast<int>(size));
+        return ::read(fd, data, size);
     }
 
     bool send_command(std::string_view cmd) {
         if (!ensure_connected()) return false;
         size_t total = 0;
         while (total < cmd.size()) {
-            ssize_t n = ::send(fd, cmd.data() + total, cmd.size() - total, MSG_NOSIGNAL);
+            ssize_t n = write_bytes(cmd.data() + total, cmd.size() - total);
             if (n <= 0) return false;
             total += n;
         }
@@ -57,7 +122,7 @@ struct GarnetClient::Impl {
 
     bool fill_until(size_t need) {
         while (accum.size() < need) {
-            ssize_t n = ::read(fd, read_buf, sizeof(read_buf));
+            ssize_t n = read_bytes(read_buf, sizeof(read_buf));
             if (n <= 0) return false;
             accum.append(read_buf, n);
         }
@@ -66,7 +131,7 @@ struct GarnetClient::Impl {
 
     bool fill_until_crlf(size_t start = 0) {
         while (accum.find("\r\n", start) == std::string::npos) {
-            ssize_t n = ::read(fd, read_buf, sizeof(read_buf));
+            ssize_t n = read_bytes(read_buf, sizeof(read_buf));
             if (n <= 0) return false;
             accum.append(read_buf, n);
         }
@@ -113,21 +178,29 @@ struct GarnetClient::Impl {
     }
 };
 
-std::unique_ptr<GarnetClient> GarnetClient::connect(const std::string& uds_path) {
+std::unique_ptr<GarnetClient> GarnetClient::connect(const std::string& host,
+                                                    uint16_t port,
+                                                    const std::string& password,
+                                                    bool use_tls,
+                                                    const std::string& server_name,
+                                                    const std::string& ca_cert_path) {
     auto client = std::make_unique<GarnetClient>();
     client->impl_ = std::make_unique<Impl>();
-    client->impl_->uds_path = uds_path;
+    client->impl_->host = host;
+    client->impl_->port = port;
+    client->impl_->password = password;
+    client->impl_->use_tls = use_tls;
+    client->impl_->server_name = server_name;
+    client->impl_->ca_cert_path = ca_cert_path;
 
     if (!client->impl_->ensure_connected()) {
-        LOG_ERROR("Failed to connect to Garnet at {}", uds_path);
+        LOG_ERROR("Failed to connect to Garnet at {}:{}", host, port);
     }
     return client;
 }
 
 GarnetClient::~GarnetClient() {
-    if (impl_ && impl_->fd >= 0) {
-        ::close(impl_->fd);
-    }
+    if (impl_) impl_->disconnect();
 }
 
 GarnetResponse GarnetClient::get(std::string_view key) {

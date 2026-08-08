@@ -11,7 +11,7 @@ using namespace gateway::server;
 class RouterTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        garnet_ = gateway::cache::GarnetClient::connect("/nonexistent.sock");
+        garnet_ = gateway::cache::GarnetClient::connect("127.0.0.1", 1);
         dispatch_ = gateway::dispatch::CapnpDispatchClient::connect("/nonexistent.sock");
         cache_ = gateway::auth::SpeculativeCache::create(100);
         collector_ = std::make_unique<gateway::usage::UsageCollector>();

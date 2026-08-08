@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <optional>
@@ -15,7 +16,12 @@ struct GarnetResponse {
 
 class GarnetClient {
 public:
-    static std::unique_ptr<GarnetClient> connect(const std::string& uds_path);
+    static std::unique_ptr<GarnetClient> connect(const std::string& host,
+                                                 uint16_t port,
+                                                 const std::string& password = {},
+                                                 bool use_tls = false,
+                                                 const std::string& server_name = {},
+                                                 const std::string& ca_cert_path = {});
     ~GarnetClient();
 
     GarnetResponse get(std::string_view key);
