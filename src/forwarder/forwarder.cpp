@@ -234,6 +234,14 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
             if (end && *end == '\0' && value >= 0) result.retry_after_ms = static_cast<int>(value * 1000);
         }
     }
+    const bool invalid_stream_content_type = request.stream
+        && result.status_code < 400
+        && !lower(result.content_type).starts_with("text/event-stream");
+    if (invalid_stream_content_type) {
+        result.status_code = 502;
+        result.content_type = "application/json";
+        result.error = "streaming upstream response did not use text/event-stream";
+    }
     if (request.response_start)
         request.response_start(result.status_code, result.content_type, result.response_headers);
 
@@ -262,7 +270,9 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         parse_usage(resp_body, result);
 
         result.stream = false;
-        result.body = std::move(resp_body);
+        result.body = invalid_stream_content_type
+            ? R"({"error":{"type":"provider_protocol_error","message":"Streaming provider response must use text/event-stream"}})"
+            : std::move(resp_body);
     } else {
         StreamPipeConfig pipe_cfg{
             .read_buf_size = impl_->config.read_buf_size,
