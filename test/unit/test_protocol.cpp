@@ -445,6 +445,25 @@ TEST(StreamPipe, ParsesGeminiUsageMetadataAndPreservesRawUsage) {
     EXPECT_NE(result.provider_usage_json.find("promptTokenCount"), std::string::npos);
 }
 
+TEST(StreamPipe, ParsesAnthropicNestedStartAndFinalUsage) {
+    std::vector<std::string> chunks = {
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":29,\"output_tokens\":0}}}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n"
+    };
+    size_t index = 0;
+    gateway::forwarder::StreamPipe pipe({}, gateway::forwarder::ProtocolMode::Passthrough);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (index == chunks.size()) return 0;
+            const auto& chunk = chunks[index++];
+            std::memcpy(out, chunk.data(), std::min(capacity, chunk.size()));
+            return static_cast<ssize_t>(chunk.size());
+        },
+        [](const char*, size_t size) -> ssize_t { return static_cast<ssize_t>(size); });
+    EXPECT_EQ(result.input_tokens, 29);
+    EXPECT_EQ(result.output_tokens, 5);
+}
+
 TEST(StreamPipe, RejectsMalformedUsageCounts) {
     const std::string input =
         "data: {\"usage\":{\"prompt_tokens\":-1,\"completion_tokens\":\"invalid\"}}\n\n";

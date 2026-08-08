@@ -266,6 +266,10 @@ void StreamPipe::extract_usage_from_event(std::string_view event_data,
     if (document.HasMember("usage") && document["usage"].IsObject()) usage = &document["usage"];
     if (!usage && document.HasMember("usageMetadata") && document["usageMetadata"].IsObject())
         usage = &document["usageMetadata"];
+    if (!usage && document.HasMember("message") && document["message"].IsObject()
+        && document["message"].HasMember("usage")
+        && document["message"]["usage"].IsObject())
+        usage = &document["message"]["usage"];
     if (!usage && document.HasMember("response") && document["response"].IsObject()
         && document["response"].HasMember("usage") && document["response"]["usage"].IsObject())
         usage = &document["response"]["usage"];
