@@ -1,9 +1,35 @@
 #include <gtest/gtest.h>
 #include "protocol/formats.h"
 #include "protocol/converter.h"
+#include "forwarder/forwarder.h"
 #include "forwarder/stream_pipe.h"
 
 using namespace gateway::protocol;
+
+TEST(ProviderResponseValidation, AcceptsCompleteSuccessJson) {
+    EXPECT_FALSE(gateway::forwarder::has_invalid_success_payload(
+        200, "application/json; charset=utf-8", R"({"id":"response-1"})"));
+    EXPECT_FALSE(gateway::forwarder::has_invalid_success_payload(
+        201, "application/problem+json", R"({"status":"created"})"));
+}
+
+TEST(ProviderResponseValidation, RejectsTruncatedOrEmptySuccessJson) {
+    EXPECT_TRUE(gateway::forwarder::has_invalid_success_payload(
+        200, "application/json", R"({"id":"response-1","choices":[)"));
+    EXPECT_TRUE(gateway::forwarder::has_invalid_success_payload(
+        200, "application/json", ""));
+    EXPECT_TRUE(gateway::forwarder::has_invalid_success_payload(
+        200, "", ""));
+}
+
+TEST(ProviderResponseValidation, IgnoresNonJsonErrorAndNoContentBodies) {
+    EXPECT_FALSE(gateway::forwarder::has_invalid_success_payload(
+        500, "application/json", R"({"truncated":)"));
+    EXPECT_FALSE(gateway::forwarder::has_invalid_success_payload(
+        204, "application/json", ""));
+    EXPECT_FALSE(gateway::forwarder::has_invalid_success_payload(
+        200, "image/png", "not-json"));
+}
 
 TEST(OpenAIParse, BasicRequest) {
     std::string body = R"({

@@ -40,6 +40,29 @@ static std::string lower(std::string_view value) {
     return result;
 }
 
+bool has_invalid_success_payload(int status_code, std::string_view content_type,
+                                 std::string_view body) {
+    if (status_code < 200 || status_code >= 300 || status_code == 204 || status_code == 205)
+        return false;
+    // A payload-bearing success with no body is never a valid provider
+    // response.  Some servers lose the Content-Type header when the
+    // connection is aborted after sending the status line.
+    if (body.empty()) return true;
+
+    auto media_type = lower(content_type);
+    if (auto separator = media_type.find(';'); separator != std::string::npos)
+        media_type.resize(separator);
+    while (!media_type.empty() && std::isspace(static_cast<unsigned char>(media_type.back())))
+        media_type.pop_back();
+    const auto json_type = media_type == "application/json"
+        || (media_type.size() > 5 && media_type.ends_with("+json"));
+    if (!json_type) return false;
+
+    rapidjson::Document document;
+    document.Parse(body.data(), body.size());
+    return document.HasParseError();
+}
+
 static bool hop_by_hop(std::string_view name) {
     const auto key = lower(name);
     return key == "connection" || key == "keep-alive" || key == "proxy-authenticate"
@@ -253,7 +276,14 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         char buf[64 * 1024];
         while (true) {
             ssize_t n = op->resp.read(buf, sizeof(buf));
-            if (n <= 0) break;
+            if (n < 0) {
+                result.status_code = 502;
+                result.content_type = "application/json";
+                result.error = "provider response body read failed";
+                resp_body = R"({"error":{"type":"provider_protocol_error","message":"Provider response ended before the body was complete"}})";
+                break;
+            }
+            if (n == 0) break;
             if (resp_body.size() + static_cast<size_t>(n) > impl_->config.max_response_body_size) {
                 result.status_code = 502;
                 result.error = "upstream response exceeded configured body limit";
@@ -267,7 +297,14 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         result.duration_ms = static_cast<int>(
             std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
 
-        parse_usage(resp_body, result);
+        if (has_invalid_success_payload(result.status_code, result.content_type, resp_body)) {
+            result.status_code = 502;
+            result.content_type = "application/json";
+            result.error = "provider returned incomplete or invalid JSON";
+            resp_body = R"({"error":{"type":"provider_protocol_error","message":"Provider returned incomplete or invalid JSON"}})";
+        } else {
+            parse_usage(resp_body, result);
+        }
 
         result.stream = false;
         result.body = invalid_stream_content_type
