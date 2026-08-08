@@ -222,6 +222,10 @@ static int http_handler(void* self, photon::net::http::Request& req,
         .request_id = req.headers["X-Request-ID"],
         .idempotency_key = req.headers["Idempotency-Key"],
         .headers = std::move(forwarded_headers),
+        .stream_timeout_ms = ctx->config.stream_timeout_ms,
+        .set_client_timeout_us = [stream = req.get_socket_stream()](uint64_t timeout_us) {
+            if (stream) stream->timeout(timeout_us);
+        },
     };
 
     HttpResponse gw_resp;

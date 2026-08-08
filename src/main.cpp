@@ -35,6 +35,8 @@ int main(int argc, char** argv) {
     std::string usage_db = std::getenv("GATEWAY_USAGE_DB")
         ?: "/var/lib/scalaapi/usage-outbox.db";
     std::string trusted_proxy_cidrs = std::getenv("GATEWAY_TRUSTED_PROXY_CIDRS") ?: "";
+    uint32_t stream_timeout_ms = static_cast<uint32_t>(std::strtoul(
+        std::getenv("GATEWAY_STREAM_TIMEOUT_MS") ?: "300000", nullptr, 10));
 
     LOG_INFO("Starting gateway: cores={} port={} garnet={}:{} tls={} capnp={}",
              cores, port, garnet_host, garnet_port, garnet_use_tls, capnp_sock);
@@ -56,6 +58,7 @@ int main(int argc, char** argv) {
         .capnp_uds_path = capnp_sock,
         .usage_db_path = usage_db,
         .trusted_proxy_cidrs = trusted_proxy_cidrs,
+        .stream_timeout_ms = stream_timeout_ms,
     };
 
     auto runtime = gateway::platform::CoreRuntime::create(config);

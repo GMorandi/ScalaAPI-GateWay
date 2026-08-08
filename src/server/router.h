@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -31,6 +32,8 @@ struct HttpRequest {
     std::string_view request_id;
     std::string_view idempotency_key;
     std::vector<std::pair<std::string, std::string>> headers;
+    uint32_t stream_timeout_ms = 300'000;
+    std::function<void(uint64_t)> set_client_timeout_us;
 };
 
 struct HttpResponse {

@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstring>
 #include <cctype>
+#include <cerrno>
 #include <cstdlib>
 #include <algorithm>
 #include <limits>
@@ -231,7 +232,7 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
     if (verb == photon::net::http::Verb::UNKNOWN) verb = photon::net::http::Verb::POST;
     auto* op = http_client->new_operation(verb, url);
 
-    op->timeout = {(request.stream ? impl_->config.total_stream_timeout_ms
+    op->timeout = {(request.stream ? impl_->config.first_token_timeout_ms
                                    : impl_->config.request_timeout_ms) * 1000ULL};
 
     for (auto& [key, value] : target.auth_headers) {
@@ -260,10 +261,17 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
     int ret = op->call();
 
     if (ret < 0) {
+        const auto call_errno = errno;
+        const bool timed_out = call_errno == ETIMEDOUT;
         result.status_code = 502;
-        result.error = "upstream connection failed";
-        result.body = R"({"error":{"type":"provider_connection_error","message":"Provider connection failed before a response was received"}})";
-        LOG_ERROR("Forward to {} failed: {}", url, strerror(errno));
+        result.error = timed_out ? "provider response header timed out"
+                                 : "upstream connection failed";
+        result.body = timed_out
+            ? R"({"error":{"type":"provider_protocol_error","message":"Provider did not return response headers before the first-token deadline"}})"
+            : R"({"error":{"type":"provider_connection_error","message":"Provider connection failed before a response was received"}})";
+        if (request.stream && request.response_start)
+            request.response_start(result.status_code, "application/json", {});
+        LOG_ERROR("Forward to {} failed: {}", url, strerror(call_errno));
         http_client->destroy_operation(op);
         return result;
     }

@@ -22,6 +22,7 @@ struct CoreRuntimeConfig {
     std::string capnp_uds_path;
     std::string usage_db_path;
     std::string trusted_proxy_cidrs;
+    uint32_t stream_timeout_ms = 300'000;
 };
 
 class CoreRuntime {

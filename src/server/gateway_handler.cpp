@@ -620,6 +620,9 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
 
     if (is_stream) {
         metrics.requests_streaming.fetch_add(1, std::memory_order_relaxed);
+        if (req.set_client_timeout_us) {
+            req.set_client_timeout_us(static_cast<uint64_t>(req.stream_timeout_ms) * 1000);
+        }
     }
 
     // --- Step 4: Compute session hash for sticky scheduling ---

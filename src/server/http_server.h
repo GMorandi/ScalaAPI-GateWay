@@ -16,6 +16,7 @@ struct HttpServerConfig {
     int core_id = 0;
     size_t max_body_size = 32 * 1024 * 1024;
     std::string trusted_proxy_cidrs;
+    uint32_t stream_timeout_ms = 300'000;
 };
 
 class HttpServer {

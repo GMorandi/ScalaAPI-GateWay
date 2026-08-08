@@ -83,6 +83,7 @@ void CoreRuntime::start() {
                 .port = impl_->config.listen_port,
                 .core_id = i,
                 .trusted_proxy_cidrs = impl_->config.trusted_proxy_cidrs,
+                .stream_timeout_ms = impl_->config.stream_timeout_ms,
             };
             state->http_server = server::HttpServer::create(
                 http_cfg, *state->garnet, *state->dispatch,
