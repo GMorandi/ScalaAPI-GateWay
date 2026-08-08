@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstring>
 #include <algorithm>
+#include <limits>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
@@ -17,6 +18,36 @@ namespace gateway::forwarder {
 static uint64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static bool valid_usage_count(const rapidjson::Value& value) {
+    if (value.IsInt()) return value.GetInt() >= 0;
+    if (value.IsInt64())
+        return value.GetInt64() >= 0 && value.GetInt64() <= std::numeric_limits<int>::max();
+    if (value.IsUint()) return value.GetUint() <= std::numeric_limits<int>::max();
+    if (value.IsUint64()) return value.GetUint64() <= std::numeric_limits<int>::max();
+    return false;
+}
+
+static bool usage_has_invalid_counts(const rapidjson::Value& usage) {
+    constexpr const char* count_fields[] = {
+        "input_tokens", "prompt_tokens", "output_tokens", "completion_tokens",
+        "cache_creation_input_tokens", "cache_read_input_tokens",
+        "promptTokenCount", "candidatesTokenCount", "cachedContentTokenCount",
+        "reasoning_tokens", "thoughtsTokenCount"};
+    for (const auto* field : count_fields) {
+        if (usage.HasMember(field) && !valid_usage_count(usage[field])) return true;
+    }
+    for (const auto* details_name : {"prompt_tokens_details", "input_tokens_details",
+                                     "output_tokens_details"}) {
+        if (!usage.HasMember(details_name)) continue;
+        const auto& details = usage[details_name];
+        if (!details.IsObject()) return true;
+        for (const auto* field : {"cached_tokens", "reasoning_tokens"}) {
+            if (details.HasMember(field) && !valid_usage_count(details[field])) return true;
+        }
+    }
+    return false;
 }
 
 StreamPipe::StreamPipe(const StreamPipeConfig& config, ProtocolMode mode,
@@ -239,6 +270,7 @@ void StreamPipe::extract_usage_from_event(std::string_view event_data,
         && document["response"].HasMember("usage") && document["response"]["usage"].IsObject())
         usage = &document["response"]["usage"];
     if (!usage) return;
+    result.malformed_usage = usage_has_invalid_counts(*usage);
     auto integer = [&](const rapidjson::Value& object, const char* key) {
         const auto& value = object[key];
         if (value.IsInt()) return value.GetInt();

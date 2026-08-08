@@ -20,6 +20,7 @@ struct StreamResult {
     int total_duration_ms = 0;
     bool completed = false;
     bool client_disconnect = false;
+    bool malformed_usage = false;
     std::string provider_usage_json;
 };
 

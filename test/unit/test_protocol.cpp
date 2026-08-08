@@ -445,6 +445,22 @@ TEST(StreamPipe, ParsesGeminiUsageMetadataAndPreservesRawUsage) {
     EXPECT_NE(result.provider_usage_json.find("promptTokenCount"), std::string::npos);
 }
 
+TEST(StreamPipe, RejectsMalformedUsageCounts) {
+    const std::string input =
+        "data: {\"usage\":{\"prompt_tokens\":-1,\"completion_tokens\":\"invalid\"}}\n\n";
+    bool read_once = false;
+    gateway::forwarder::StreamPipe pipe({}, gateway::forwarder::ProtocolMode::Passthrough);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (read_once) return 0;
+            read_once = true;
+            std::memcpy(out, input.data(), std::min(capacity, input.size()));
+            return static_cast<ssize_t>(input.size());
+        },
+        [](const char*, size_t size) -> ssize_t { return static_cast<ssize_t>(size); });
+    EXPECT_TRUE(result.malformed_usage);
+}
+
 TEST(StreamPipe, HandlesPartialWritesDuringTransformation) {
     const std::string input = "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n";
     bool read_once = false;

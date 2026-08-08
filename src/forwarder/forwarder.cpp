@@ -12,6 +12,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <algorithm>
+#include <limits>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
@@ -78,6 +79,38 @@ static int as_int(const rapidjson::Value& object, const char* key) {
     return 0;
 }
 
+static bool valid_usage_count(const rapidjson::Value& value) {
+    if (value.IsInt()) return value.GetInt() >= 0;
+    if (value.IsInt64())
+        return value.GetInt64() >= 0 && value.GetInt64() <= std::numeric_limits<int>::max();
+    if (value.IsUint()) return value.GetUint() <= std::numeric_limits<int>::max();
+    if (value.IsUint64()) return value.GetUint64() <= std::numeric_limits<int>::max();
+    return false;
+}
+
+static bool usage_has_invalid_counts(const rapidjson::Value& usage) {
+    constexpr std::string_view count_fields[] = {
+        "input_tokens", "prompt_tokens", "output_tokens", "completion_tokens",
+        "cache_creation_input_tokens", "cache_read_input_tokens",
+        "promptTokenCount", "candidatesTokenCount", "cachedContentTokenCount",
+        "reasoning_tokens", "thoughtsTokenCount"};
+    for (const auto field : count_fields) {
+        if (usage.HasMember(field.data()) && !valid_usage_count(usage[field.data()]))
+            return true;
+    }
+    for (const auto details_name : {"prompt_tokens_details", "input_tokens_details",
+                                    "output_tokens_details"}) {
+        if (!usage.HasMember(details_name)) continue;
+        const auto& details = usage[details_name];
+        if (!details.IsObject()) return true;
+        for (const auto field : {"cached_tokens", "reasoning_tokens"}) {
+            if (details.HasMember(field) && !valid_usage_count(details[field]))
+                return true;
+        }
+    }
+    return false;
+}
+
 static void parse_usage(std::string_view body, ForwardResult& result) {
     rapidjson::Document document;
     document.Parse(body.data(), body.size());
@@ -90,6 +123,7 @@ static void parse_usage(std::string_view body, ForwardResult& result) {
         && document["response"].HasMember("usage") && document["response"]["usage"].IsObject())
         usage = &document["response"]["usage"];
     if (!usage) return;
+    result.malformed_usage = usage_has_invalid_counts(*usage);
 
     result.input_tokens = as_int(*usage, "input_tokens");
     if (result.input_tokens == 0) result.input_tokens = as_int(*usage, "prompt_tokens");
@@ -264,6 +298,7 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         result.cache_create_tokens = stream_result.cache_create_tokens;
         result.cache_read_tokens = stream_result.cache_read_tokens;
         result.reasoning_tokens = stream_result.reasoning_tokens;
+        result.malformed_usage = stream_result.malformed_usage;
         result.provider_usage_json = std::move(stream_result.provider_usage_json);
         result.first_token_ms = stream_result.first_token_ms;
         result.duration_ms = stream_result.total_duration_ms;

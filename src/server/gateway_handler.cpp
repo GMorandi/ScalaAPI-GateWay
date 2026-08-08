@@ -767,9 +767,29 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             },
         };
         forward_result = forwarder_->forward(target, forward_request, stream_mode);
+        const auto malformed_provider_usage = forward_result.malformed_usage;
+
+        if (malformed_provider_usage) {
+            dispatch_.report_upstream_error(dispatch::ErrorReportData{
+                .account_id = target.account_id,
+                .status_code = 502,
+                .retry_after_ms = 0,
+                .request_id = request_id,
+            });
+            const auto abort_ack = dispatch_.abort(
+                dispatch_result.lease_token, "malformed_provider_usage");
+            if (!abort_ack.acknowledged()) {
+                LOG_ERROR("Malformed usage abort failed for request {} lease {}: {}",
+                          request_id, dispatch_result.lease_token, abort_ack.error_code);
+            }
+            terminal_abort = true;
+            forward_result.status_code = 502;
+            metrics.upstream_errors.fetch_add(1, std::memory_order_relaxed);
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+        }
 
         // Check if we need failover
-        if (forward_result.status_code >= 400) {
+        if (forward_result.status_code >= 400 && !malformed_provider_usage) {
             auto retryable = spec.can_failover && !forward_result.output_started
                 && retry_policy.is_retryable_status(forward_result.status_code);
             auto action = retryable
@@ -828,6 +848,12 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
             }
         }
+    }
+
+    if (forward_result.malformed_usage) {
+        resp.status_code = 502;
+        resp.content_type = "application/json";
+        resp.body = error_json("provider_error", "Provider returned malformed usage");
     }
 
     bool defer_media_usage = false;

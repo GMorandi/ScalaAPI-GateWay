@@ -44,6 +44,7 @@ struct ForwardResult {
     int duration_ms = 0;
     bool client_disconnect = false;
     bool output_started = false;
+    bool malformed_usage = false;
     std::string content_type;
     std::vector<std::pair<std::string, std::string>> response_headers;
     int retry_after_ms = 0;
