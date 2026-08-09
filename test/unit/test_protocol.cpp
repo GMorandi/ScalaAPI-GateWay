@@ -6,7 +6,10 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cstring>
 #include <thread>
+#include <utility>
+#include <vector>
 
 using namespace gateway::protocol;
 
@@ -815,4 +818,123 @@ TEST(StreamPipe, EnforcesTotalTimeoutIndependentlyOfInterChunkTimeout) {
     EXPECT_TRUE(result.timed_out);
     EXPECT_FALSE(result.provider_disconnect);
     EXPECT_FALSE(result.terminal_event_seen);
+}
+
+TEST(StreamPipe, WithholdsUnsafeOpenAIEventBeforeClientWrite) {
+    gateway::forwarder::StreamPipeConfig config;
+    int policy_calls = 0;
+    config.policy = [&](std::string_view content) {
+        ++policy_calls;
+        return content.find("unsafe") != std::string_view::npos
+            ? gateway::forwarder::StreamPolicyDecision::Blocked(
+                "content_policy_blocked", "blocked stream event")
+            : gateway::forwarder::StreamPolicyDecision::Allowed();
+    };
+    const std::vector<std::string> chunks = {
+        "data: {\"choices\":[{\"delta\":{\"content\":\"safe\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"unsafe\"}}]}\n\n",
+        "data: [DONE]\n\n"
+    };
+    size_t index = 0;
+    std::string emitted;
+    gateway::forwarder::StreamPipe pipe(
+        config, gateway::forwarder::ProtocolMode::Passthrough,
+        Format::OpenAIChatCompletions, Format::OpenAIChatCompletions);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (index == chunks.size()) return 0;
+            const auto& chunk = chunks[index++];
+            if (chunk.size() > capacity) return -1;
+            std::memcpy(out, chunk.data(), chunk.size());
+            return static_cast<ssize_t>(chunk.size());
+        },
+        [&](const char* data, size_t size) -> ssize_t {
+            emitted.append(data, size);
+            return static_cast<ssize_t>(size);
+        });
+
+    EXPECT_TRUE(result.policy_blocked);
+    EXPECT_FALSE(result.policy_failed_closed);
+    EXPECT_TRUE(result.incomplete);
+    EXPECT_EQ(result.policy_error_code, "content_policy_blocked");
+    EXPECT_EQ(policy_calls, 2);
+    EXPECT_NE(emitted.find("safe"), std::string::npos);
+    EXPECT_EQ(emitted.find("unsafe"), std::string::npos);
+    EXPECT_NE(emitted.find("content_policy_blocked"), std::string::npos);
+}
+
+TEST(StreamPipe, EmitsAnthropicPolicyFailureAndFailsClosedOnOversizedEvent) {
+    gateway::forwarder::StreamPipeConfig config;
+    config.max_policy_event_bytes = 16;
+    int policy_calls = 0;
+    config.policy = [&](std::string_view) {
+        ++policy_calls;
+        return gateway::forwarder::StreamPolicyDecision::Allowed();
+    };
+    const std::string input =
+        "event: content_block_delta\ndata: {\"text\":\"bounded\"}\n\n";
+    bool read_once = false;
+    std::string emitted;
+    gateway::forwarder::StreamPipe pipe(
+        config, gateway::forwarder::ProtocolMode::Passthrough,
+        Format::Anthropic, Format::Anthropic);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (read_once) return 0;
+            read_once = true;
+            if (input.size() > capacity) return -1;
+            std::memcpy(out, input.data(), input.size());
+            return static_cast<ssize_t>(input.size());
+        },
+        [&](const char* data, size_t size) -> ssize_t {
+            emitted.append(data, size);
+            return static_cast<ssize_t>(size);
+        });
+
+    EXPECT_TRUE(result.policy_failed_closed);
+    EXPECT_FALSE(result.policy_blocked);
+    EXPECT_EQ(result.policy_error_code, "content_policy_payload_too_large");
+    EXPECT_EQ(policy_calls, 0);
+    EXPECT_NE(emitted.find("event: error"), std::string::npos);
+    EXPECT_NE(emitted.find("content_policy_payload_too_large"), std::string::npos);
+    EXPECT_EQ(emitted.find("bounded"), std::string::npos);
+}
+
+TEST(StreamPipe, EmitsOpenAIResponsesAndGeminiPolicyErrorEvents) {
+    const auto run = [](Format format) {
+        gateway::forwarder::StreamPipeConfig config;
+        config.policy = [](std::string_view) {
+            return gateway::forwarder::StreamPolicyDecision::FailedClosed(
+                "content_policy_unavailable", "classifier unavailable");
+        };
+        const std::string input = "data: {\"text\":\"unsafe\"}\n\n";
+        bool read_once = false;
+        std::string emitted;
+        gateway::forwarder::StreamPipe pipe(
+            config, gateway::forwarder::ProtocolMode::Passthrough,
+            format, format);
+        auto result = pipe.run(
+            [&](char* out, size_t capacity) -> ssize_t {
+                if (read_once) return 0;
+                read_once = true;
+                if (input.size() > capacity) return -1;
+                std::memcpy(out, input.data(), input.size());
+                return static_cast<ssize_t>(input.size());
+            },
+            [&](const char* data, size_t size) -> ssize_t {
+                emitted.append(data, size);
+                return static_cast<ssize_t>(size);
+            });
+        return std::pair{result, emitted};
+    };
+
+    const auto responses = run(Format::OpenAIResponses);
+    EXPECT_TRUE(responses.first.policy_failed_closed);
+    EXPECT_NE(responses.second.find("event: response.failed"), std::string::npos);
+    EXPECT_NE(responses.second.find("content_policy_unavailable"), std::string::npos);
+
+    const auto gemini = run(Format::Gemini);
+    EXPECT_TRUE(gemini.first.policy_failed_closed);
+    EXPECT_NE(gemini.second.find("data: {\"error\""), std::string::npos);
+    EXPECT_NE(gemini.second.find("classifier unavailable"), std::string::npos);
 }

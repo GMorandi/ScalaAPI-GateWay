@@ -862,6 +862,30 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             .stream_source = upstream_format,
             .stream_target = inbound_format,
             .stream_write = resp.stream_write,
+            .stream_policy = is_stream && chat_capability(spec.capability)
+                ? forwarder::StreamPolicyFn([&](std::string_view content) {
+                    const auto policy = dispatch_.evaluate_response_content(
+                        dispatch_result.lease_token, std::string(content),
+                        std::string(spec.name));
+                    switch (dispatch::content_policy_disposition(policy)) {
+                    case dispatch::ContentPolicyDisposition::Allow:
+                        return forwarder::StreamPolicyDecision::Allowed();
+                    case dispatch::ContentPolicyDisposition::Block:
+                        return forwarder::StreamPolicyDecision::Blocked(
+                            policy.error_code.empty()
+                                ? "content_policy_blocked" : policy.error_code,
+                            "Provider response was withheld by the active content policy");
+                    case dispatch::ContentPolicyDisposition::FailClosed:
+                        return forwarder::StreamPolicyDecision::FailedClosed(
+                            policy.error_code.empty()
+                                ? "content_policy_unavailable" : policy.error_code,
+                            "Provider response could not be cleared for delivery");
+                    }
+                    return forwarder::StreamPolicyDecision::FailedClosed(
+                        "content_policy_unavailable",
+                        "Provider response could not be cleared for delivery");
+                })
+                : forwarder::StreamPolicyFn{},
             .response_start = [&](int status, std::string_view content_type,
                                   const std::vector<std::pair<std::string, std::string>>& headers) {
                 resp.status_code = status;

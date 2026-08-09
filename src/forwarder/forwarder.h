@@ -34,6 +34,7 @@ struct ForwardRequest {
     protocol::Format stream_source = protocol::Format::OpenAIChatCompletions;
     protocol::Format stream_target = protocol::Format::Anthropic;
     StreamWriteFn stream_write;
+    StreamPolicyFn stream_policy;
     ResponseStartFn response_start;
     OutputStartedFn output_started;
 };
@@ -55,6 +56,10 @@ struct ForwardResult {
     bool provider_response_received = false;
     int provider_status_code = 0;
     bool malformed_usage = false;
+    bool policy_blocked = false;
+    bool policy_failed_closed = false;
+    std::string policy_error_code;
+    std::string policy_message;
     std::string content_type;
     std::vector<std::pair<std::string, std::string>> response_headers;
     int retry_after_ms = 0;

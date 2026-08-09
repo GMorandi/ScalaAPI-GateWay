@@ -65,6 +65,110 @@ StreamPipe::StreamPipe(const StreamPipeConfig& config, ProtocolMode mode,
     write_buf_.resize(config_.write_buf_size);
 }
 
+bool StreamPipe::write_all(WriteFn& write, std::string_view data, StreamResult& result) {
+    size_t written = 0;
+    while (written < data.size()) {
+        const auto count = write(data.data() + written, data.size() - written);
+        if (count <= 0) {
+            result.client_disconnect = true;
+            return false;
+        }
+        written += static_cast<size_t>(count);
+    }
+    result.bytes_forwarded += static_cast<int64_t>(data.size());
+    return true;
+}
+
+bool StreamPipe::apply_policy(std::string_view provider_event,
+                              std::string_view client_event,
+                              StreamResult& result) {
+    // [DONE] and Anthropic's empty message_stop carry no user-visible text.
+    // Other terminal events (notably response.completed) may still contain
+    // the final output envelope and must be evaluated.
+    if (!config_.policy
+        || provider_event.find("data: [DONE]") != std::string_view::npos
+        || (source_format_ == protocol::Format::Anthropic
+            && provider_event.find("event: message_stop") != std::string_view::npos)) {
+        return true;
+    }
+
+    const auto content = client_event.empty() ? provider_event : client_event;
+    StreamPolicyDecision decision;
+    if (content.size() > config_.max_policy_event_bytes) {
+        decision = StreamPolicyDecision::FailedClosed(
+            "content_policy_payload_too_large",
+            "A streaming response event exceeded the content policy limit");
+    } else {
+        decision = config_.policy(content);
+    }
+
+    if (decision.disposition == StreamPolicyDisposition::Allow) return true;
+
+    result.policy_blocked = decision.disposition == StreamPolicyDisposition::Block;
+    result.policy_failed_closed = decision.disposition == StreamPolicyDisposition::FailClosed;
+    result.policy_error_code = decision.error_code.empty()
+        ? (result.policy_blocked ? "content_policy_blocked" : "content_policy_unavailable")
+        : std::move(decision.error_code);
+    result.policy_message = decision.message.empty()
+        ? (result.policy_blocked
+            ? "Provider response was withheld by the active content policy"
+            : "Provider response could not be cleared for delivery")
+        : std::move(decision.message);
+    result.incomplete = true;
+    return false;
+}
+
+static std::string json_quote(std::string_view value) {
+    static constexpr char hex[] = "0123456789abcdef";
+    std::string quoted;
+    quoted.reserve(value.size() + 2);
+    quoted.push_back('"');
+    for (const auto ch : value) {
+        const auto byte = static_cast<unsigned char>(ch);
+        switch (byte) {
+        case '"': quoted += "\\\""; break;
+        case '\\': quoted += "\\\\"; break;
+        case '\b': quoted += "\\b"; break;
+        case '\f': quoted += "\\f"; break;
+        case '\n': quoted += "\\n"; break;
+        case '\r': quoted += "\\r"; break;
+        case '\t': quoted += "\\t"; break;
+        default:
+            if (byte < 0x20) {
+                quoted += "\\u00";
+                quoted.push_back(hex[byte >> 4]);
+                quoted.push_back(hex[byte & 0x0f]);
+            } else {
+                quoted.push_back(static_cast<char>(byte));
+            }
+            break;
+        }
+    }
+    quoted.push_back('"');
+    return quoted;
+}
+
+std::string StreamPipe::policy_error_event(const StreamResult& result) const {
+    const auto code = json_quote(result.policy_error_code);
+    const auto message = json_quote(result.policy_message);
+    if (target_format_ == protocol::Format::Anthropic) {
+        return "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":"
+            + code + ",\"message\":" + message + "}}\n\n";
+    }
+    if (target_format_ == protocol::Format::OpenAIResponses) {
+        return "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{"
+            "\"status\":\"failed\",\"error\":{\"code\":" + code
+            + ",\"message\":" + message + "}}}\n\n";
+    }
+    return "data: {\"error\":{\"type\":" + code + ",\"message\":"
+        + message + "}}\n\n";
+}
+
+bool StreamPipe::emit_policy_error(WriteFn& write, StreamResult& result) {
+    const auto error = policy_error_event(result);
+    return write_all(write, error, result);
+}
+
 StreamResult StreamPipe::run(ReadFn upstream_read, WriteFn client_write) {
     if (mode_ == ProtocolMode::Passthrough) {
         return run_passthrough(upstream_read, client_write);
@@ -78,6 +182,7 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
     uint64_t last_data_ms = stream_start;
     uint64_t last_write_ms = stream_start;
     bool first_token_received = false;
+    const bool policy_enabled = static_cast<bool>(config_.policy);
 
     while (true) {
         auto elapsed = now_ms() - stream_start;
@@ -139,23 +244,23 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
             result.first_token_ms = static_cast<int>(last_data_ms - stream_start);
         }
 
-        // Zero-copy: write raw bytes directly to client
-        // Coroutine yields if client TCP buffer is full (natural backpressure)
-        size_t written = 0;
-        while (written < static_cast<size_t>(n)) {
-            ssize_t w = write(read_buf_.data() + written, n - written);
-            if (w <= 0) {
-                // Client disconnected (EPIPE / ECONNRESET)
-                result.client_disconnect = true;
-                result.incomplete = !result.terminal_event_seen;
-                result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
-                return result;
+        // Without a policy callback, preserve the zero-copy path. When policy
+        // is enabled, complete SSE events are held until the decision returns.
+        if (!policy_enabled) {
+            size_t written = 0;
+            while (written < static_cast<size_t>(n)) {
+                ssize_t w = write(read_buf_.data() + written, n - written);
+                if (w <= 0) {
+                    result.client_disconnect = true;
+                    result.incomplete = !result.terminal_event_seen;
+                    result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
+                    return result;
+                }
+                written += w;
+                last_write_ms = now_ms();
             }
-            written += w;
-            last_write_ms = now_ms();
+            result.bytes_forwarded += n;
         }
-
-        result.bytes_forwarded += n;
 
         // Parse complete SSE events for usage without searching arbitrary text
         // chunks.  This handles a usage object split across reads.
@@ -171,16 +276,35 @@ StreamResult StreamPipe::run_passthrough(ReadFn& read, WriteFn& write) {
                 delim_size = 4;
             }
             if (delim == std::string::npos) break;
-            extract_usage_from_event(
-                std::string_view(event_accumulator_.data() + consumed,
-                                 delim - consumed + delim_size), result);
-            if (is_terminal_event(std::string_view(event_accumulator_.data() + consumed,
-                                                   delim - consumed + delim_size))) {
+            const auto event = std::string_view(
+                event_accumulator_.data() + consumed, delim - consumed + delim_size);
+            extract_usage_from_event(event, result);
+            const auto terminal = is_terminal_event(event);
+            if (terminal) {
                 result.terminal_event_seen = true;
+            }
+            if (policy_enabled) {
+                if (!apply_policy(event, event, result)) {
+                    emit_policy_error(write, result);
+                    result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
+                    return result;
+                }
+                if (!write_all(write, event, result)) {
+                    result.incomplete = !result.terminal_event_seen;
+                    result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
+                    return result;
+                }
+                last_write_ms = now_ms();
             }
             consumed = delim + delim_size;
         }
         if (consumed > 0) event_accumulator_.erase(0, consumed);
+        if (policy_enabled && event_accumulator_.size() > config_.max_policy_event_bytes) {
+            apply_policy(event_accumulator_, event_accumulator_, result);
+            emit_policy_error(write, result);
+            result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
+            return result;
+        }
         if (event_accumulator_.size() > config_.read_buf_size * 4) {
             event_accumulator_.erase(0, event_accumulator_.size() - config_.read_buf_size);
         }
@@ -265,30 +389,30 @@ StreamResult StreamPipe::run_transform(ReadFn& read, WriteFn& write) {
             // Transform the event between protocols
             auto transformed = transform_event(event);
 
-            // Write transformed event to client
-            if (!transformed.empty()) {
-                size_t written = 0;
-                while (written < transformed.size()) {
-                    ssize_t w = write(transformed.data() + written,
-                                      transformed.size() - written);
-                    if (w <= 0) {
-                        result.client_disconnect = true;
-                        result.incomplete = !result.terminal_event_seen;
-                        result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
-                        return result;
-                    }
-                    written += static_cast<size_t>(w);
-                }
-                result.bytes_forwarded += transformed.size();
-            }
-
-            // Extract usage from final events
+            // Extract usage before the policy decision so a policy failure
+            // after a provider usage frame still has late-settlement evidence.
             if (event.find("\"usage\"") != std::string_view::npos
-                || event.find("\"usageMetadata\"") != std::string_view::npos ||
-                event.find("message_stop") != std::string_view::npos) {
+                || event.find("\"usageMetadata\"") != std::string_view::npos
+                || event.find("message_stop") != std::string_view::npos) {
                 extract_usage_from_event(event, result);
             }
-            if (is_terminal_event(event)) result.terminal_event_seen = true;
+            const auto terminal = is_terminal_event(event);
+            if (terminal) result.terminal_event_seen = true;
+
+            if (!apply_policy(event, transformed, result)) {
+                emit_policy_error(write, result);
+                result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
+                return result;
+            }
+
+            // Write transformed event to client
+            if (!transformed.empty()) {
+                if (!write_all(write, transformed, result)) {
+                    result.incomplete = !result.terminal_event_seen;
+                    result.total_duration_ms = static_cast<int>(now_ms() - stream_start);
+                    return result;
+                }
+            }
 
             pos = delim + delim_size;
         }

@@ -367,7 +367,9 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
             .inter_chunk_timeout_ms = impl_->config.inter_chunk_timeout_ms,
             .total_timeout_ms = impl_->config.total_stream_timeout_ms,
             .keepalive_interval_ms = impl_->config.keepalive_interval_ms,
+            .max_policy_event_bytes = 128 * 1024,
             .inject_keepalive = true,
+            .policy = request.stream_policy,
         };
 
         StreamPipe pipe(pipe_cfg, protocol_mode,
@@ -408,7 +410,20 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         result.client_disconnect = stream_result.client_disconnect;
         result.stream_incomplete = stream_result.incomplete;
         result.stream_timeout = stream_result.timed_out;
-        if (result.client_disconnect) {
+        result.policy_blocked = stream_result.policy_blocked;
+        result.policy_failed_closed = stream_result.policy_failed_closed;
+        result.policy_error_code = std::move(stream_result.policy_error_code);
+        result.policy_message = std::move(stream_result.policy_message);
+        if (result.policy_blocked || result.policy_failed_closed) {
+            result.status_code = result.policy_blocked ? 400 : 503;
+            result.content_type = "text/event-stream";
+            result.disconnect_reason = result.policy_blocked
+                ? "content_policy_blocked" : "content_policy_unavailable";
+            result.cancellation_reason = result.policy_blocked
+                ? "content_policy_blocked" : "content_policy_failed_closed";
+            result.error = result.policy_message;
+        }
+        if (!result.policy_blocked && !result.policy_failed_closed && result.client_disconnect) {
             result.disconnect_reason = "client_disconnect";
             result.cancellation_reason = result.output_started
                 ? "client_disconnect_after_output" : "client_disconnect_before_output";
@@ -419,7 +434,8 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
                 result.status_code = 502;
                 result.error = "client disconnected before provider stream completion";
             }
-        } else if (result.stream_incomplete) {
+        } else if (!result.policy_blocked && !result.policy_failed_closed
+                   && result.stream_incomplete) {
             const auto provider_unavailable = !result.stream_timeout;
             result.status_code = provider_unavailable ? 503 : 502;
             result.content_type = "application/json";
