@@ -337,6 +337,39 @@ TEST(EmbeddingsValidation, RejectsMalformedProviderResponses) {
         R"({"data":[{"index":0,"embedding":[0.1,0.2,0.3]},{"index":1,"embedding":[0.4,0.5,0.6]}],"usage":{"prompt_tokens":0,"total_tokens":0}})").valid);
 }
 
+TEST(CatalogValidation, AcceptsOpenAiAndGeminiModelMetadata) {
+    EXPECT_TRUE(Converter::validate_models_response(
+        R"({"object":"list","data":[{"id":"gpt-4o","object":"model","created":1700000000,"owned_by":"mock"}]})",
+        Format::OpenAIChatCompletions).valid);
+    EXPECT_TRUE(Converter::validate_models_response(
+        R"({"models":[{"name":"models/gemini-2.0-flash","inputTokenLimit":1000000,"outputTokenLimit":8192,"supportedGenerationMethods":["generateContent"]}]})",
+        Format::Gemini).valid);
+    EXPECT_TRUE(Converter::validate_models_response(
+        R"({"name":"models/gemini-2.0-flash","inputTokenLimit":1000000,"outputTokenLimit":8192,"supportedGenerationMethods":["generateContent"]})",
+        Format::Gemini).valid);
+}
+
+TEST(CatalogValidation, RejectsMalformedOrDuplicateModels) {
+    EXPECT_FALSE(Converter::validate_models_response(
+        R"({"object":"list","data":[{"id":"gpt-4o","object":"model","created":0,"owned_by":"mock"}]})",
+        Format::OpenAIChatCompletions).valid);
+    EXPECT_FALSE(Converter::validate_models_response(
+        R"({"object":"list","data":[{"id":"gpt-4o","object":"model","created":1,"owned_by":"mock"},{"id":"gpt-4o","object":"model","created":1,"owned_by":"mock"}]})",
+        Format::OpenAIChatCompletions).valid);
+    EXPECT_FALSE(Converter::validate_models_response(
+        R"({"models":[{"name":"gemini-2.0-flash","inputTokenLimit":1,"outputTokenLimit":1,"supportedGenerationMethods":[]}]})",
+        Format::Gemini).valid);
+}
+
+TEST(CatalogValidation, RequiresBoundedPositiveTokenCount) {
+    EXPECT_TRUE(Converter::validate_count_tokens_response(
+        R"({"input_tokens":17})").valid);
+    EXPECT_FALSE(Converter::validate_count_tokens_response(
+        R"({"input_tokens":0})").valid);
+    EXPECT_FALSE(Converter::validate_count_tokens_response(
+        R"({"input_tokens":"17"})").valid);
+}
+
 TEST(RealtimeParse, ExtractsModelFromSessionAndResponseEvents) {
     EXPECT_EQ(Converter::parse_realtime_model(
         R"({"type":"session.update","session":{"model":"gpt-realtime"}})"),

@@ -11,6 +11,7 @@
 #include <initializer_list>
 #include <limits>
 #include <charconv>
+#include <unordered_set>
 
 namespace gateway::protocol {
 
@@ -146,6 +147,78 @@ ValidationResult Converter::validate_embeddings_response(
         || !response["usage"]["total_tokens"].IsInt()
         || response["usage"]["total_tokens"].GetInt() <= 0)
         return {false, "Provider embeddings response is missing positive usage"};
+    return {true, {}};
+}
+
+ValidationResult Converter::validate_models_response(
+    std::string_view response_body, Format format) {
+    rapidjson::Document response;
+    response.Parse(response_body.data(), response_body.size());
+    if (response.HasParseError() || !response.IsObject())
+        return {false, "Provider models response must be a JSON object"};
+
+    if (format == Format::Gemini) {
+        auto validate_model = [](const rapidjson::Value& model) -> ValidationResult {
+            if (!model.IsObject() || !model.HasMember("name") || !model["name"].IsString()
+                || model["name"].GetStringLength() <= std::string_view("models/").size()
+                || std::string_view(model["name"].GetString(), model["name"].GetStringLength())
+                    .substr(0, std::string_view("models/").size()) != "models/"
+                || !model.HasMember("supportedGenerationMethods")
+                || !model["supportedGenerationMethods"].IsArray()
+                || model["supportedGenerationMethods"].Empty())
+                return {false, "Provider Gemini model metadata is incomplete"};
+            for (const auto& method : model["supportedGenerationMethods"].GetArray())
+                if (!method.IsString() || method.GetStringLength() == 0)
+                    return {false, "Provider Gemini model methods are malformed"};
+            for (const char* limit : {"inputTokenLimit", "outputTokenLimit"})
+                if (!model.HasMember(limit) || !model[limit].IsInt64() || model[limit].GetInt64() <= 0)
+                    return {false, "Provider Gemini model token limits are malformed"};
+            return {true, {}};
+        };
+
+        if (response.HasMember("models")) {
+            if (!response["models"].IsArray())
+                return {false, "Provider Gemini models must be an array"};
+            for (const auto& model : response["models"].GetArray()) {
+                auto result = validate_model(model);
+                if (!result.valid) return result;
+            }
+            return {true, {}};
+        }
+        return validate_model(response);
+    }
+
+    if (!response.HasMember("object") || !response["object"].IsString()
+        || std::string_view(response["object"].GetString(), response["object"].GetStringLength()) != "list"
+        || !response.HasMember("data") || !response["data"].IsArray())
+        return {false, "Provider models response must contain a list and data array"};
+
+    std::unordered_set<std::string_view> ids;
+    for (const auto& model : response["data"].GetArray()) {
+        if (!model.IsObject() || !model.HasMember("id") || !model["id"].IsString()
+            || model["id"].GetStringLength() == 0
+            || !model.HasMember("object") || !model["object"].IsString()
+            || std::string_view(model["object"].GetString(), model["object"].GetStringLength()) != "model"
+            || !model.HasMember("created") || !model["created"].IsInt64()
+            || model["created"].GetInt64() <= 0
+            || !model.HasMember("owned_by") || !model["owned_by"].IsString()
+            || model["owned_by"].GetStringLength() == 0)
+            return {false, "Provider model metadata is incomplete"};
+        const std::string_view id(model["id"].GetString(), model["id"].GetStringLength());
+        if (!ids.emplace(id).second)
+            return {false, "Provider model catalog contains duplicate ids"};
+    }
+    return {true, {}};
+}
+
+ValidationResult Converter::validate_count_tokens_response(std::string_view response_body) {
+    rapidjson::Document response;
+    response.Parse(response_body.data(), response_body.size());
+    if (response.HasParseError() || !response.IsObject()
+        || !response.HasMember("input_tokens") || !response["input_tokens"].IsInt64()
+        || response["input_tokens"].GetInt64() <= 0
+        || response["input_tokens"].GetInt64() > 1'000'000'000)
+        return {false, "Provider token-count response must contain a bounded positive input_tokens value"};
     return {true, {}};
 }
 
