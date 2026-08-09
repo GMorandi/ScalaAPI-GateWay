@@ -4,6 +4,7 @@
 #include "protocol/converter.h"
 #include "protocol/formats.h"
 
+#include <array>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -137,6 +138,113 @@ TEST(ProtocolGolden, ResponsesValidateAndConvertAcrossProviderGroups) {
     EXPECT_NE(errors.find("\"status\": 400"), std::string::npos);
     EXPECT_NE(errors.find("\"status\": 429"), std::string::npos);
     EXPECT_NE(errors.find("rate_limit_error"), std::string::npos);
+}
+
+TEST(ProtocolGolden, RequestGoldensCoverEveryProviderPair) {
+    using namespace gateway::protocol;
+
+    struct RequestGolden {
+        Format format;
+        const char* fixture;
+    };
+    constexpr std::array requests{
+        RequestGolden{Format::OpenAIChatCompletions, "openai_chat_request_v1.json"},
+        RequestGolden{Format::OpenAIResponses, "openai_responses_request_v1.json"},
+        RequestGolden{Format::Anthropic, "anthropic_messages_request_v1.json"},
+        RequestGolden{Format::Gemini, "gemini_generate_request_v1.json"},
+    };
+    constexpr std::array targets{
+        Format::OpenAIChatCompletions,
+        Format::OpenAIResponses,
+        Format::Anthropic,
+        Format::Gemini,
+    };
+
+    const auto target_model = [](Format format) {
+        switch (format) {
+        case Format::OpenAIChatCompletions: return std::string("gpt-4o");
+        case Format::OpenAIResponses: return std::string("gpt-4o");
+        case Format::Anthropic: return std::string("claude-sonnet-4-20250514");
+        case Format::Gemini: return std::string("gemini-2.0-flash");
+        }
+        return std::string("unknown");
+    };
+
+    for (const auto& source : requests) {
+        for (const auto target : targets) {
+            const auto body = Converter::convert_request(
+                read_fixture(source.fixture), source.format, target,
+                target_model(target));
+            SCOPED_TRACE(std::string("source=") + std::to_string(
+                static_cast<int>(source.format)) + ", target="
+                + std::to_string(static_cast<int>(target)));
+            ASSERT_FALSE(body.empty());
+            EXPECT_NE(body.find("Weather in Vienna?"), std::string::npos);
+
+            ChatRequest parsed;
+            switch (target) {
+            case Format::OpenAIChatCompletions:
+                parsed = openai::parse_request(body);
+                break;
+            case Format::OpenAIResponses:
+                parsed = openai_responses::parse_request(body);
+                break;
+            case Format::Anthropic:
+                parsed = anthropic::parse_request(body);
+                break;
+            case Format::Gemini:
+                parsed = gemini::parse_request(body);
+                break;
+            }
+            if (target == Format::Gemini) {
+                // Gemini carries the model in the generateContent URL, not JSON.
+                EXPECT_TRUE(parsed.model.empty());
+            } else {
+                EXPECT_EQ(parsed.model, target_model(target));
+            }
+            ASSERT_FALSE(parsed.messages.empty());
+        }
+    }
+}
+
+TEST(ProtocolGolden, ResponseGoldensValidateEveryProviderPair) {
+    using namespace gateway::protocol;
+
+    struct ResponseGolden {
+        Format format;
+        const char* fixture;
+    };
+    constexpr std::array responses{
+        ResponseGolden{Format::OpenAIChatCompletions, "openai_chat_response_v1.json"},
+        ResponseGolden{Format::OpenAIResponses, "openai_responses_response_v1.json"},
+        ResponseGolden{Format::Anthropic, "anthropic_messages_response_v1.json"},
+        ResponseGolden{Format::Gemini, "gemini_generate_response_v1.json"},
+    };
+    constexpr std::array targets{
+        Format::OpenAIChatCompletions,
+        Format::OpenAIResponses,
+        Format::Anthropic,
+        Format::Gemini,
+    };
+
+    for (const auto& source : responses) {
+        for (const auto target : targets) {
+            const auto converted = Converter::convert_response_checked(
+                read_fixture(source.fixture), source.format, target,
+                "gpt-4o");
+            SCOPED_TRACE(std::string("source=") + std::to_string(
+                static_cast<int>(source.format)) + ", target="
+                + std::to_string(static_cast<int>(target)));
+            ASSERT_TRUE(converted.success);
+            EXPECT_NE(converted.body.find("Sunny in Vienna."), std::string::npos);
+            if (target == Format::OpenAIResponses) {
+                EXPECT_TRUE(Converter::validate_responses_response(converted.body).valid);
+            } else {
+                EXPECT_FALSE(gateway::forwarder::has_invalid_success_payload(
+                    200, "application/json", converted.body));
+            }
+        }
+    }
 }
 
 TEST(ProtocolGolden, StreamingFixturesHaveProviderTerminalEventsAndUsage) {
