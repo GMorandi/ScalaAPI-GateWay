@@ -202,14 +202,14 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     if (resp_bytes.empty()) {
         result.outcome = DispatchResult::Outcome::Rejected;
         result.reject_message = "platform unavailable; retry may be safe";
-        result.reject_code = 12;
+        result.reject_code = kPlatformUnavailableRejectCode;
         return result;
     }
 
     if (resp_bytes[0] != 0x81 || (resp_bytes.size() - 1) % sizeof(capnp::word) != 0) {
         result.outcome = DispatchResult::Outcome::Rejected;
         result.reject_message = "invalid platform dispatch response";
-        result.reject_code = 12;
+        result.reject_code = kPlatformUnavailableRejectCode;
         return result;
     }
     std::vector<capnp::word> aligned((resp_bytes.size() - 1) / sizeof(capnp::word));
@@ -220,7 +220,7 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
         LOG_ERROR("Dispatch protocol version mismatch: expected=3 received={}",
                   resp.getProtocolVersion());
         result.reject_message = "dispatch protocol version mismatch";
-        result.reject_code = 12;
+        result.reject_code = kPlatformUnavailableRejectCode;
         return result;
     }
 

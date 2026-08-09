@@ -1,8 +1,30 @@
 #include <gtest/gtest.h>
 #include "forwarder/retry_policy.h"
 #include "forwarder/failover.h"
+#include "dispatch/capnp_dispatch_client.h"
 
 using namespace gateway::forwarder;
+
+TEST(PlatformDispatchRetryPolicy, OnlyTransportLossIsRetryable) {
+    gateway::dispatch::DispatchResult result;
+    result.outcome = gateway::dispatch::DispatchResult::Outcome::Rejected;
+    result.reject_code = gateway::dispatch::kPlatformUnavailableRejectCode;
+    EXPECT_TRUE(gateway::dispatch::is_retryable_platform_dispatch(result));
+
+    result.reject_code = 8;
+    EXPECT_FALSE(gateway::dispatch::is_retryable_platform_dispatch(result));
+    result.outcome = gateway::dispatch::DispatchResult::Outcome::Ok;
+    result.reject_code = gateway::dispatch::kPlatformUnavailableRejectCode;
+    EXPECT_FALSE(gateway::dispatch::is_retryable_platform_dispatch(result));
+}
+
+TEST(PlatformDispatchRetryPolicy, BackoffIsBoundedAndDeterministic) {
+    EXPECT_EQ(gateway::dispatch::platform_dispatch_retry_delay_ms(1), 50);
+    EXPECT_EQ(gateway::dispatch::platform_dispatch_retry_delay_ms(2), 100);
+    EXPECT_EQ(gateway::dispatch::platform_dispatch_retry_delay_ms(5), 800);
+    EXPECT_EQ(gateway::dispatch::platform_dispatch_retry_delay_ms(6), 1000);
+    EXPECT_EQ(gateway::dispatch::platform_dispatch_retry_delay_ms(100), 1000);
+}
 
 TEST(RetryPolicy, ComputeDelayExponential) {
     RetryPolicy policy;

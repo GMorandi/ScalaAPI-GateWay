@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <algorithm>
 
 namespace gateway::dispatch {
 
@@ -103,6 +104,18 @@ struct DispatchResult {
     std::string replay_content_type;
     std::string replay_body;
 };
+
+inline constexpr int kPlatformUnavailableRejectCode = 12;
+
+inline bool is_retryable_platform_dispatch(const DispatchResult& result) {
+    return result.outcome == DispatchResult::Outcome::Rejected
+        && result.reject_code == kPlatformUnavailableRejectCode;
+}
+
+inline int platform_dispatch_retry_delay_ms(int retry_number) {
+    if (retry_number <= 0) return 50;
+    return std::min(1000, 50 * (1 << std::min(retry_number - 1, 5)));
+}
 
 struct MediaOperationResult {
     bool accepted = false;

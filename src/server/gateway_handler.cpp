@@ -289,7 +289,23 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
         .idempotency_key = std::string(req.idempotency_key), .realtime_session = true,
         .request_query = std::string(req.query),
     };
-    auto dispatched = dispatch_.dispatch(dispatch_req);
+    auto dispatch_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+    int dispatch_transport_retries = 0;
+    dispatch::DispatchResult dispatched;
+    while (true) {
+        dispatched = dispatch_.dispatch(dispatch_req);
+        if (dispatched.outcome == dispatch::DispatchResult::Outcome::Ok
+            || dispatched.outcome == dispatch::DispatchResult::Outcome::Reauth) {
+            break;
+        }
+        if (!dispatch::is_retryable_platform_dispatch(dispatched)
+            || ++dispatch_transport_retries > 8
+            || std::chrono::steady_clock::now() >= dispatch_deadline) {
+            break;
+        }
+        photon::thread_usleep(static_cast<uint64_t>(
+            dispatch::platform_dispatch_retry_delay_ms(dispatch_transport_retries)) * 1000);
+    }
     if (dispatched.outcome != dispatch::DispatchResult::Outcome::Ok
         && dispatched.outcome != dispatch::DispatchResult::Outcome::Reauth) {
         client.send_text(R"({"type":"error","error":{"code":"provider_unavailable","message":"No realtime provider is available"}})");
@@ -685,7 +701,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 break;
             }
             if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Rejected) {
-                if (dispatch_result.reject_code == 12) {
+                if (dispatch::is_retryable_platform_dispatch(dispatch_result)) {
                     if (++dispatch_transport_retries > 8 ||
                         std::chrono::steady_clock::now() >= dispatch_deadline) {
                         resp.status_code = 503;
@@ -695,9 +711,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                         metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
                         return 0;
                     }
-                    const auto retry_ms = std::min<int>(1000,
-                        50 * (1 << std::min(dispatch_transport_retries - 1, 4)));
-                    photon::thread_usleep(static_cast<uint64_t>(retry_ms) * 1000);
+                    photon::thread_usleep(static_cast<uint64_t>(
+                        dispatch::platform_dispatch_retry_delay_ms(dispatch_transport_retries)) * 1000);
                     continue;
                 }
                 if (dispatch_result.reject_code == 10) {
