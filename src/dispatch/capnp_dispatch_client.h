@@ -45,6 +45,7 @@ struct DispatchRequest {
     std::string force_platform;
     std::string request_fingerprint;
     std::string request_query;
+    std::string request_body;
 };
 
 struct MediaOperationRequest {

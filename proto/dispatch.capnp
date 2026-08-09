@@ -42,6 +42,7 @@ struct DispatchRequest {
   forcePlatform @19 :Text;
   requestFingerprint @20 :Text;
   requestQuery @21 :Text;
+  requestBody @22 :Text;
 
   enum EndpointKind {
     messages @0;
@@ -106,6 +107,7 @@ struct RejectInfo {
     idempotencyReplay @10;
     pricingUnavailable @11;
     platformUnavailable @12;
+    contentPolicyBlocked @13;
   }
 }
 

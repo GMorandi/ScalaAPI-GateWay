@@ -191,6 +191,7 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     builder.setRealtimeSession(req.realtime_session);
     builder.setForcePlatform(req.force_platform);
     builder.setRequestQuery(req.request_query);
+    builder.setRequestBody(req.request_body);
 
     auto excluded = builder.initExcludedAccounts(req.excluded_accounts.size());
     for (size_t i = 0; i < req.excluded_accounts.size(); ++i) {

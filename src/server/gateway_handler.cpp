@@ -675,6 +675,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         .force_platform = std::string(matched.force_platform),
         .request_fingerprint = request_fingerprint,
         .request_query = std::string(req.query),
+        .request_body = std::string(req.body),
     };
 
     forwarder::FailoverController failover;
@@ -771,6 +772,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                     : dispatch_result.reject_code == 10 ? 409
                     : dispatch_result.reject_code == 9 ? 403
                     : dispatch_result.reject_code == 11 ? 503
+                    : dispatch_result.reject_code == 13 ? 400
                     : 503;
                 const auto reject_type = dispatch_result.reject_code <= 1
                     ? "authentication_error"
@@ -781,6 +783,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                     : dispatch_result.reject_code == 9 ? "permission_error"
                     : dispatch_result.reject_code == 10 ? "idempotency_replay"
                     : dispatch_result.reject_code == 11 ? "pricing_unavailable"
+                    : dispatch_result.reject_code == 13 ? "content_policy_violation"
                     : "provider_unavailable";
                 resp.body = error_json(reject_type, dispatch_result.reject_message);
                 metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
