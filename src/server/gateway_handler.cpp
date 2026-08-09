@@ -1011,11 +1011,19 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
     bool response_policy_overridden = false;
     if ((!is_stream || forward_result.status_code >= 400) && !forward_result.body.empty()) {
         resp.body = std::move(forward_result.body);
-        if (forward_result.status_code >= 400 && inbound_format != last_upstream_format) {
-            const auto error_status = forward_result.provider_status_code >= 400
+        const bool explicit_provider_error = forward_result.provider_response_received
+            && forward_result.provider_status_code >= 400;
+        // Forwarder-generated transport/protocol bodies use the OpenAI-shaped
+        // internal error contract even when the selected Provider speaks
+        // Anthropic or Gemini. Only an explicit Provider error is native to
+        // last_upstream_format and eligible for same-format passthrough.
+        const auto error_source = explicit_provider_error
+            ? last_upstream_format : protocol::Format::OpenAIChatCompletions;
+        if (forward_result.status_code >= 400 && inbound_format != error_source) {
+            const auto error_status = explicit_provider_error
                 ? forward_result.provider_status_code : forward_result.status_code;
             resp.body = protocol::Converter::convert_error(
-                resp.body, error_status, last_upstream_format, inbound_format);
+                resp.body, error_status, error_source, inbound_format);
             resp.content_type = "application/json";
         }
         if (forward_result.status_code < 400 && chat_capability(spec.capability)
