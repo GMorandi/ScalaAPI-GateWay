@@ -36,7 +36,8 @@ struct CapnpDispatchClient::Impl {
     std::chrono::steady_clock::time_point reconnect_after{};
 
     void disconnect() {
-        if (fd >= 0) ::close(fd);
+        if (fd < 0) return;
+        ::close(fd);
         fd = -1;
         reconnect_after = std::chrono::steady_clock::now()
             + std::chrono::milliseconds(reconnect_delay_ms);
@@ -396,7 +397,13 @@ RpcAck CapnpDispatchClient::report_usage(const UsageReportData& report) {
     builder.setResponseBody(report.response_body);
 
     auto words = capnp::messageToFlatArray(msg);
-    return parse_ack(impl_->exchange(Method::ReportUsage, words), 0x82);
+    auto ack = parse_ack(impl_->exchange(Method::ReportUsage, words), 0x82);
+    // A missing or malformed frame means the peer closed or corrupted the
+    // stream. Drop a live socket so the durable usage reporter reconnects
+    // before retrying, without extending backoff for an already closed fd.
+    if (ack.error_code == "invalid_ack")
+        impl_->disconnect();
+    return ack;
 }
 
 RpcAck CapnpDispatchClient::record_lease_evidence(
