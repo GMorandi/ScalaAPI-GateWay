@@ -4,6 +4,10 @@
 #include "forwarder/forwarder.h"
 #include "forwarder/stream_pipe.h"
 
+#include <cerrno>
+#include <chrono>
+#include <thread>
+
 using namespace gateway::protocol;
 
 TEST(ProviderResponseValidation, AcceptsCompleteSuccessJson) {
@@ -646,4 +650,71 @@ TEST(StreamPipe, TreatsZeroLengthClientWriteAsDisconnect) {
         [](const char*, size_t) -> ssize_t { return 0; });
     EXPECT_TRUE(result.client_disconnect);
     EXPECT_TRUE(result.incomplete);
+}
+
+TEST(StreamPipe, EnforcesInterChunkTimeoutAfterFirstToken) {
+    gateway::forwarder::StreamPipeConfig config;
+    config.first_token_timeout_ms = 100;
+    config.inter_chunk_timeout_ms = 5;
+    config.total_timeout_ms = 200;
+    config.keepalive_interval_ms = 1000;
+    gateway::forwarder::StreamPipe pipe(
+        config, gateway::forwarder::ProtocolMode::Passthrough,
+        Format::OpenAIChatCompletions, Format::OpenAIChatCompletions);
+
+    bool sent_first_chunk = false;
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (!sent_first_chunk) {
+                const std::string chunk =
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n";
+                sent_first_chunk = true;
+                if (chunk.size() > capacity) return -1;
+                std::memcpy(out, chunk.data(), chunk.size());
+                return static_cast<ssize_t>(chunk.size());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            errno = EAGAIN;
+            return -1;
+        },
+        [](const char*, size_t size) -> ssize_t { return static_cast<ssize_t>(size); });
+
+    EXPECT_TRUE(result.incomplete);
+    EXPECT_TRUE(result.timed_out);
+    EXPECT_FALSE(result.provider_disconnect);
+    EXPECT_FALSE(result.terminal_event_seen);
+    EXPECT_GE(result.first_token_ms, 0);
+}
+
+TEST(StreamPipe, EnforcesTotalTimeoutIndependentlyOfInterChunkTimeout) {
+    gateway::forwarder::StreamPipeConfig config;
+    config.first_token_timeout_ms = 100;
+    config.inter_chunk_timeout_ms = 100;
+    config.total_timeout_ms = 5;
+    config.keepalive_interval_ms = 1000;
+    gateway::forwarder::StreamPipe pipe(
+        config, gateway::forwarder::ProtocolMode::Passthrough,
+        Format::OpenAIChatCompletions, Format::OpenAIChatCompletions);
+
+    bool sent_first_chunk = false;
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (!sent_first_chunk) {
+                const std::string chunk =
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n";
+                sent_first_chunk = true;
+                if (chunk.size() > capacity) return -1;
+                std::memcpy(out, chunk.data(), chunk.size());
+                return static_cast<ssize_t>(chunk.size());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            errno = EAGAIN;
+            return -1;
+        },
+        [](const char*, size_t size) -> ssize_t { return static_cast<ssize_t>(size); });
+
+    EXPECT_TRUE(result.incomplete);
+    EXPECT_TRUE(result.timed_out);
+    EXPECT_FALSE(result.provider_disconnect);
+    EXPECT_FALSE(result.terminal_event_seen);
 }
