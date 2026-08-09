@@ -8,7 +8,9 @@ FetchContent_Declare(
     photon
     GIT_REPOSITORY https://github.com/alibaba/PhotonLibOS.git
     GIT_TAG 4dd457013c48d17c571fd6d2aa87199ae4c25d4f
-    GIT_SHALLOW TRUE
+    # This historical commit is not advertised by the upstream refs. A shallow
+    # clone cannot resolve it, while a full fetch can still pin the exact source.
+    GIT_SHALLOW FALSE
 )
 set(PHOTON_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(PHOTON_ENABLE_URING OFF CACHE BOOL "" FORCE)
