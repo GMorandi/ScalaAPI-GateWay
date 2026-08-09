@@ -105,6 +105,7 @@ struct RejectInfo {
     unsupportedCapability @9;
     idempotencyReplay @10;
     pricingUnavailable @11;
+    platformUnavailable @12;
   }
 }
 

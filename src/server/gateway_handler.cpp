@@ -662,6 +662,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
 
     auto dispatch_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
     int dispatch_waits = 0;
+    int dispatch_transport_retries = 0;
     int dispatch_retry_sequence = 0;
     bool terminal_abort = false;
     while (true) {
@@ -684,6 +685,21 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 break;
             }
             if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Rejected) {
+                if (dispatch_result.reject_code == 12) {
+                    if (++dispatch_transport_retries > 8 ||
+                        std::chrono::steady_clock::now() >= dispatch_deadline) {
+                        resp.status_code = 503;
+                        resp.body = error_json("provider_unavailable",
+                            "Platform dispatch was unavailable before the retry deadline");
+                        metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                        metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+                        return 0;
+                    }
+                    const auto retry_ms = std::min<int>(1000,
+                        50 * (1 << std::min(dispatch_transport_retries - 1, 4)));
+                    photon::thread_usleep(static_cast<uint64_t>(retry_ms) * 1000);
+                    continue;
+                }
                 if (dispatch_result.reject_code == 10) {
                     constexpr std::string_view marker = "Media operation already exists: ";
                     auto message = dispatch_result.reject_message;
