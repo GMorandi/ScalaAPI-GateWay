@@ -1,0 +1,8 @@
+{
+  "id": "resp-golden-v1",
+  "object": "response",
+  "status": "completed",
+  "model": "gpt-4o",
+  "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Sunny in Vienna."}]}],
+  "usage": {"input_tokens": 12, "output_tokens": 4, "total_tokens": 16}
+}

@@ -1,0 +1,7 @@
+{
+  "model": "gemini-2.0-flash",
+  "systemInstruction": {"parts": [{"text": "You are precise."}]},
+  "contents": [{"role": "user", "parts": [{"text": "Weather in Vienna?"}]}],
+  "tools": [{"functionDeclarations": [{"name": "get_weather", "description": "Get weather", "parameters": {"type": "object"}}]}],
+  "generationConfig": {"maxOutputTokens": 256, "temperature": 0.2, "topP": 0.9, "stopSequences": ["END"]}
+}

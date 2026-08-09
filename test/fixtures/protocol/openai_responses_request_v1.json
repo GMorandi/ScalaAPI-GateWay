@@ -1,0 +1,13 @@
+{
+  "model": "gpt-4o",
+  "instructions": "Use the weather tool when needed.",
+  "input": [
+    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Weather in Vienna?"}]},
+    {"type": "function_call", "call_id": "call_weather", "name": "get_weather", "arguments": "{\"city\":\"Vienna\"}"},
+    {"type": "function_call_output", "call_id": "call_weather", "output": "{\"temperature_c\":18}"}
+  ],
+  "tools": [{"type": "function", "name": "get_weather", "description": "Get weather", "parameters": {"type": "object"}}],
+  "stream": true,
+  "max_output_tokens": 256,
+  "metadata": {"user_id": "golden-user"}
+}

@@ -1,0 +1,5 @@
+{
+  "candidates": [{"content": {"role": "model", "parts": [{"text": "Sunny in Vienna."}]}, "finishReason": "STOP", "index": 0}],
+  "usageMetadata": {"promptTokenCount": 12, "candidatesTokenCount": 4, "totalTokenCount": 16},
+  "modelVersion": "gemini-2.0-flash-001"
+}

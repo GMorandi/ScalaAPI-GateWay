@@ -1,0 +1,6 @@
+[
+  {"status": 400, "body": "{\"error\":{\"type\":\"invalid_request_error\"}}"},
+  {"status": 401, "body": "{\"error\":{\"type\":\"authentication_error\"}}"},
+  {"status": 429, "body": "{\"error\":{\"type\":\"rate_limit_error\"}}"},
+  {"status": 500, "body": "{\"error\":{\"type\":\"server_error\"}}"}
+]

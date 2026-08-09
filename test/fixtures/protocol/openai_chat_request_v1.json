@@ -1,0 +1,21 @@
+{
+  "model": "gpt-4o",
+  "messages": [
+    {"role": "system", "content": "You are precise."},
+    {"role": "user", "content": [{"type": "text", "text": "Weather in Vienna?"}]}
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+      }
+    }
+  ],
+  "stream": true,
+  "max_completion_tokens": 128,
+  "temperature": 0.2,
+  "user": "golden-user"
+}
