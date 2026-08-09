@@ -41,6 +41,14 @@ static std::string lower(std::string_view value) {
     return result;
 }
 
+static bool provider_disconnect_error(int error) {
+    // Photon may report an incomplete chunked body with errno == 0. Treat it
+    // the same as the usual socket reset errors for the public availability
+    // contract; malformed bytes that were fully received remain protocol errors.
+    return error == 0 || error == ECONNRESET || error == ECONNABORTED
+        || error == EPIPE || error == ENOTCONN;
+}
+
 bool has_invalid_success_payload(int status_code, std::string_view content_type,
                                  std::string_view body) {
     if (status_code < 200 || status_code >= 300 || status_code == 204 || status_code == 205)
@@ -263,12 +271,15 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
     if (ret < 0) {
         const auto call_errno = errno;
         const bool timed_out = call_errno == ETIMEDOUT;
-        result.status_code = 502;
+        // A connection reset before Provider headers is an availability
+        // failure. Keep the protocol-error contract reserved for a bounded
+        // header timeout or malformed/incomplete Provider payload.
+        result.status_code = timed_out ? 502 : 503;
         result.error = timed_out ? "provider response header timed out"
-                                 : "upstream connection failed";
+                                 : "upstream connection unavailable";
         result.body = timed_out
             ? R"({"error":{"type":"provider_protocol_error","message":"Provider did not return response headers before the first-token deadline"}})"
-            : R"({"error":{"type":"provider_connection_error","message":"Provider connection failed before a response was received"}})";
+            : R"({"error":{"type":"provider_unavailable","message":"Provider connection was unavailable before a response was received"}})";
         if (request.stream && request.response_start)
             request.response_start(result.status_code, "application/json", {});
         LOG_ERROR("Forward to {} failed: {}", url, strerror(call_errno));
@@ -309,10 +320,16 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         while (true) {
             ssize_t n = op->resp.read(buf, sizeof(buf));
             if (n < 0) {
-                result.status_code = 502;
+                const auto body_errno = errno;
+                const auto unavailable = provider_disconnect_error(body_errno);
+                result.status_code = unavailable ? 503 : 502;
                 result.content_type = "application/json";
-                result.error = "provider response body read failed";
-                resp_body = R"({"error":{"type":"provider_protocol_error","message":"Provider response ended before the body was complete"}})";
+                result.error = unavailable
+                    ? "provider response body connection unavailable"
+                    : "provider response body read failed";
+                resp_body = unavailable
+                    ? R"({"error":{"type":"provider_unavailable","message":"Provider connection was unavailable before the response body completed"}})"
+                    : R"({"error":{"type":"provider_protocol_error","message":"Provider response ended before the body was complete"}})";
                 break;
             }
             if (n == 0) break;
@@ -403,7 +420,8 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
                 result.error = "client disconnected before provider stream completion";
             }
         } else if (result.stream_incomplete) {
-            result.status_code = 502;
+            const auto provider_unavailable = !result.stream_timeout;
+            result.status_code = provider_unavailable ? 503 : 502;
             result.content_type = "application/json";
             result.disconnect_reason = result.stream_timeout
                 ? "provider_timeout" : "provider_disconnect";
@@ -412,7 +430,9 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
                 ? "provider stream timed out before a terminal event"
                 : "provider stream ended before a terminal event";
             if (!result.output_started) {
-                result.body = R"({"error":{"type":"provider_protocol_error","message":"Provider stream ended before completion"}})";
+                result.body = provider_unavailable
+                    ? R"({"error":{"type":"provider_unavailable","message":"Provider connection was unavailable before the stream completed"}})"
+                    : R"({"error":{"type":"provider_protocol_error","message":"Provider stream ended before completion"}})";
             }
         }
     }

@@ -752,7 +752,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             if (dispatch_result.outcome == dispatch::DispatchResult::Outcome::Wait) {
                 if (++dispatch_waits > 8 || std::chrono::steady_clock::now() >= dispatch_deadline) {
                     resp.status_code = 503;
-                    resp.body = R"({"error":{"type":"dispatch_timeout","message":"No upstream account became available before the deadline"}})";
+                    resp.body = R"({"error":{"type":"provider_unavailable","message":"No upstream Provider account became available before the deadline"}})";
                     metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
                     metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
                     return 0;
