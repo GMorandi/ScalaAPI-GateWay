@@ -67,6 +67,14 @@ std::string error_json(std::string_view type, std::string_view message) {
     return buffer.GetString();
 }
 
+std::string photon_websocket_url(std::string url) {
+    // Photon performs the WebSocket upgrade through its HTTP client and expects
+    // an HTTP(S) URL even though the Platform contract names it ws/wss.
+    if (url.starts_with("wss://")) url.replace(0, 6, "https://");
+    else if (url.starts_with("ws://")) url.replace(0, 5, "http://");
+    return url;
+}
+
 protocol::Format format_from_name(std::string_view name, protocol::Format fallback) {
     if (name == "anthropic" || name == "messages") return protocol::Format::Anthropic;
     if (name == "openai_chat" || name == "chat_completions") return protocol::Format::OpenAIChatCompletions;
@@ -314,12 +322,11 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
         return -1;
     }
     auto& target = dispatched.upstream;
-    auto upstream_url = target.websocket_url;
+    auto upstream_url = photon_websocket_url(target.websocket_url);
     if (upstream_url.empty()) {
         upstream_url = target.base_url;
-        if (upstream_url.starts_with("https://")) upstream_url.replace(0, 8, "wss://");
-        else if (upstream_url.starts_with("http://")) upstream_url.replace(0, 7, "ws://");
         upstream_url += target.upstream_path.empty() ? "/v1/responses" : target.upstream_path;
+        upstream_url = photon_websocket_url(std::move(upstream_url));
     }
     auto* http_client = photon::net::http::new_http_client();
     if (!http_client) {
