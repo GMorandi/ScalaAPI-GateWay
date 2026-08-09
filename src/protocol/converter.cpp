@@ -222,6 +222,40 @@ ValidationResult Converter::validate_count_tokens_response(std::string_view resp
     return {true, {}};
 }
 
+ValidationResult Converter::validate_responses_response(std::string_view response_body) {
+    rapidjson::Document response;
+    response.Parse(response_body.data(), response_body.size());
+    if (response.HasParseError() || !response.IsObject())
+        return {false, "Provider Responses response must be a JSON object"};
+    if (!response.HasMember("id") || !response["id"].IsString()
+        || response["id"].GetStringLength() == 0
+        || !response.HasMember("object") || !response["object"].IsString()
+        || std::string_view(response["object"].GetString(), response["object"].GetStringLength()) != "response"
+        || !response.HasMember("status") || !response["status"].IsString()
+        || std::string_view(response["status"].GetString(), response["status"].GetStringLength()) != "completed"
+        || !response.HasMember("model") || !response["model"].IsString()
+        || response["model"].GetStringLength() == 0)
+        return {false, "Provider Responses response metadata is incomplete"};
+    if (!response.HasMember("output") || !response["output"].IsArray()
+        || response["output"].Empty())
+        return {false, "Provider Responses response is missing output"};
+    for (const auto& item : response["output"].GetArray())
+        if (!item.IsObject() || !item.HasMember("type") || !item["type"].IsString()
+            || item["type"].GetStringLength() == 0)
+            return {false, "Provider Responses output item is malformed"};
+    if (!response.HasMember("usage") || !response["usage"].IsObject())
+        return {false, "Provider Responses response is missing usage"};
+    const auto& usage = response["usage"];
+    if (!usage.HasMember("input_tokens") || !usage["input_tokens"].IsInt64()
+        || usage["input_tokens"].GetInt64() <= 0
+        || !usage.HasMember("output_tokens") || !usage["output_tokens"].IsInt64()
+        || usage["output_tokens"].GetInt64() <= 0
+        || !usage.HasMember("total_tokens") || !usage["total_tokens"].IsInt64()
+        || usage["total_tokens"].GetInt64() < usage["input_tokens"].GetInt64() + usage["output_tokens"].GetInt64())
+        return {false, "Provider Responses usage is incomplete or inconsistent"};
+    return {true, {}};
+}
+
 std::string Converter::parse_realtime_model(std::string_view event) {
     rapidjson::Document document;
     document.Parse(event.data(), event.size());

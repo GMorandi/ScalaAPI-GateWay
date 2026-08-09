@@ -370,6 +370,20 @@ TEST(CatalogValidation, RequiresBoundedPositiveTokenCount) {
         R"({"input_tokens":"17"})").valid);
 }
 
+TEST(ResponsesValidation, AcceptsCompletedUsageEnvelope) {
+    EXPECT_TRUE(Converter::validate_responses_response(
+        R"({"id":"resp_1","object":"response","status":"completed","model":"gpt-4o","output":[{"type":"message"}],"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}})").valid);
+}
+
+TEST(ResponsesValidation, RejectsIncompleteOrInconsistentEnvelope) {
+    EXPECT_FALSE(Converter::validate_responses_response(
+        R"({"id":"resp_1","object":"response","status":"in_progress","model":"gpt-4o","output":[{"type":"message"}],"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}})").valid);
+    EXPECT_FALSE(Converter::validate_responses_response(
+        R"({"id":"resp_1","object":"response","status":"completed","model":"gpt-4o","output":[],"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}})").valid);
+    EXPECT_FALSE(Converter::validate_responses_response(
+        R"({"id":"resp_1","object":"response","status":"completed","model":"gpt-4o","output":[{"type":"message"}],"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":11}})").valid);
+}
+
 TEST(RealtimeParse, ExtractsModelFromSessionAndResponseEvents) {
     EXPECT_EQ(Converter::parse_realtime_model(
         R"({"type":"session.update","session":{"model":"gpt-realtime"}})"),

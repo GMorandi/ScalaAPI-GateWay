@@ -67,6 +67,8 @@ public:
         std::string_view response_body, Format format);
     static ValidationResult validate_count_tokens_response(
         std::string_view response_body);
+    static ValidationResult validate_responses_response(
+        std::string_view response_body);
     static std::string parse_realtime_model(std::string_view event);
     static std::string extract_multipart_field(std::string_view body,
                                                std::string_view content_type,
