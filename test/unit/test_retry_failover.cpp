@@ -26,6 +26,30 @@ TEST(PlatformDispatchRetryPolicy, BackoffIsBoundedAndDeterministic) {
     EXPECT_EQ(gateway::dispatch::platform_dispatch_retry_delay_ms(100), 1000);
 }
 
+TEST(ContentPolicyDisposition, AllowsOnlyAnEvaluatedPassingDecision) {
+    gateway::dispatch::ContentPolicyResult result;
+    result.evaluated = true;
+    result.allowed = true;
+    EXPECT_EQ(gateway::dispatch::content_policy_disposition(result),
+        gateway::dispatch::ContentPolicyDisposition::Allow);
+}
+
+TEST(ContentPolicyDisposition, BlocksAnEvaluatedDenial) {
+    gateway::dispatch::ContentPolicyResult result;
+    result.evaluated = true;
+    result.allowed = false;
+    EXPECT_EQ(gateway::dispatch::content_policy_disposition(result),
+        gateway::dispatch::ContentPolicyDisposition::Block);
+}
+
+TEST(ContentPolicyDisposition, FailsClosedWhenPlatformDidNotEvaluate) {
+    gateway::dispatch::ContentPolicyResult result;
+    result.evaluated = false;
+    result.allowed = true;
+    EXPECT_EQ(gateway::dispatch::content_policy_disposition(result),
+        gateway::dispatch::ContentPolicyDisposition::FailClosed);
+}
+
 TEST(RetryPolicy, ComputeDelayExponential) {
     RetryPolicy policy;
     policy.base_delay_ms = 100;

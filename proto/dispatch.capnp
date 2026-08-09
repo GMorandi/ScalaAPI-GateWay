@@ -9,6 +9,7 @@ interface GatewayDispatch {
   reportUpstreamError @3 (report: Types.ErrorReport) -> (ack: WriteAck);
   mediaOperation @4 (request: MediaOperationRequest) -> (response: MediaOperationResponse);
   recordLeaseEvidence @5 (evidence: LeaseEvidence) -> (ack: WriteAck);
+  evaluateContent @6 (request: ContentPolicyRequest) -> (response: ContentPolicyResponse);
 }
 
 struct WriteAck {
@@ -133,6 +134,27 @@ struct LeaseEvidence {
     forwarded @0;
     outputStarted @1;
   }
+}
+
+struct ContentPolicyRequest {
+  leaseToken @0 :Text;
+  content @1 :Text;
+  capability @2 :Text;
+  stage @3 :Stage;
+
+  enum Stage {
+    request @0;
+    response @1;
+  }
+}
+
+struct ContentPolicyResponse {
+  evaluated @0 :Bool;
+  allowed @1 :Bool;
+  retryable @2 :Bool;
+  errorCode @3 :Text;
+  matchedRuleId @4 :Int64;
+  message @5 :Text;
 }
 
 struct MediaOperationRequest {

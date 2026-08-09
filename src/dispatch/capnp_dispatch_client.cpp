@@ -26,6 +26,7 @@ enum class Method : uint8_t {
     ReportUpstreamError = 4,
     MediaOperation = 5,
     RecordLeaseEvidence = 6,
+    EvaluateContent = 7,
 };
 
 struct CapnpDispatchClient::Impl {
@@ -460,6 +461,40 @@ RpcAck CapnpDispatchClient::report_upstream_error(const ErrorReportData& error) 
 
     auto words = capnp::messageToFlatArray(msg);
     return parse_ack(impl_->exchange(Method::ReportUpstreamError, words), 0x84);
+}
+
+ContentPolicyResult CapnpDispatchClient::evaluate_response_content(
+    const std::string& lease_token, const std::string& content,
+    const std::string& capability) {
+    ContentPolicyResult result;
+    std::lock_guard<photon::mutex> guard(impl_->mutex);
+
+    capnp::MallocMessageBuilder msg;
+    auto builder = msg.initRoot<::ContentPolicyRequest>();
+    builder.setLeaseToken(lease_token);
+    builder.setContent(content);
+    builder.setCapability(capability);
+    builder.setStage(::ContentPolicyRequest::Stage::RESPONSE);
+
+    auto words = capnp::messageToFlatArray(msg);
+    auto response = impl_->exchange(Method::EvaluateContent, words);
+    if (response.size() <= 1 || response[0] != 0x87
+        || (response.size() - 1) % sizeof(capnp::word) != 0) {
+        impl_->disconnect();
+        return result;
+    }
+
+    std::vector<capnp::word> aligned((response.size() - 1) / sizeof(capnp::word));
+    std::memcpy(aligned.data(), response.data() + 1, response.size() - 1);
+    capnp::FlatArrayMessageReader reader(kj::arrayPtr(aligned.data(), aligned.size()));
+    auto wire = reader.getRoot<::ContentPolicyResponse>();
+    result.evaluated = wire.getEvaluated();
+    result.allowed = wire.getAllowed();
+    result.retryable = wire.getRetryable();
+    result.error_code = wire.getErrorCode();
+    result.matched_rule_id = wire.getMatchedRuleId();
+    result.message = wire.getMessage();
+    return result;
 }
 
 bool CapnpDispatchClient::is_connected() {

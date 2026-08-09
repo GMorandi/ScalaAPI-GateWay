@@ -984,6 +984,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         break;
     }
 
+    bool response_policy_overridden = false;
     if ((!is_stream || forward_result.status_code >= 400) && !forward_result.body.empty()) {
         resp.body = std::move(forward_result.body);
         if (forward_result.status_code < 400 && chat_capability(spec.capability)
@@ -1066,6 +1067,37 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 resp.body = error_json("provider_protocol_error", validation.message);
                 metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
             }
+        }
+    }
+
+    if (!is_stream && !terminal_abort && !forward_result.malformed_usage
+        && forward_result.status_code >= 200 && forward_result.status_code < 400
+        && chat_capability(spec.capability) && !resp.body.empty()) {
+        const auto policy = dispatch_.evaluate_response_content(
+            dispatch_result.lease_token, resp.body, std::string(spec.name));
+        switch (dispatch::content_policy_disposition(policy)) {
+            case dispatch::ContentPolicyDisposition::Allow:
+                break;
+            case dispatch::ContentPolicyDisposition::Block:
+                response_policy_overridden = true;
+                resp.status_code = 400;
+                resp.content_type = "application/json";
+                resp.body = error_json("content_policy_violation",
+                    "Provider response was withheld by the active content policy");
+                resp.headers.emplace_back("Cache-Control", "no-store");
+                metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case dispatch::ContentPolicyDisposition::FailClosed:
+                response_policy_overridden = true;
+                resp.status_code = 503;
+                resp.content_type = "application/json";
+                resp.body = error_json("content_policy_unavailable",
+                    "Provider response could not be cleared for delivery");
+                resp.headers.emplace_back("Cache-Control", "no-store");
+                metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                LOG_ERROR("Response content policy failed closed for request {} lease {}: {}",
+                    request_id, dispatch_result.lease_token, policy.error_code);
+                break;
         }
     }
 
@@ -1177,7 +1209,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         .cancellation_reason = forward_result.cancellation_reason,
         .media_operation_id = dispatch_result.upstream.media_operation_id,
         .pricing_version = "v1",
-        .response_status_code = persist_response ? forward_result.status_code : 0,
+        .response_status_code = persist_response ? resp.status_code : 0,
         .response_content_type = persist_response ? resp.content_type : "",
         .response_body = persist_response ? resp.body : "",
     };
@@ -1234,7 +1266,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         }
     }
 
-    if (!media_response_overridden)
+    if (!media_response_overridden && !response_policy_overridden)
         resp.status_code = forward_result.status_code > 0 ? forward_result.status_code : 200;
     metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
     return 0;

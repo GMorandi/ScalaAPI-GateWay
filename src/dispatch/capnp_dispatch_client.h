@@ -181,6 +181,28 @@ struct RpcAck {
     bool acknowledged() const { return accepted || duplicate; }
 };
 
+struct ContentPolicyResult {
+    bool evaluated = false;
+    bool allowed = false;
+    bool retryable = true;
+    std::string error_code = "platform_unavailable";
+    int64_t matched_rule_id = 0;
+    std::string message;
+};
+
+enum class ContentPolicyDisposition {
+    Allow,
+    Block,
+    FailClosed,
+};
+
+inline ContentPolicyDisposition content_policy_disposition(
+    const ContentPolicyResult& result) {
+    if (!result.evaluated) return ContentPolicyDisposition::FailClosed;
+    return result.allowed
+        ? ContentPolicyDisposition::Allow : ContentPolicyDisposition::Block;
+}
+
 enum class LeaseEvidenceStage {
     Forwarded,
     OutputStarted,
@@ -214,6 +236,9 @@ public:
                  LeaseAbortDisposition disposition = LeaseAbortDisposition::NoCharge,
                  int provider_status_code = 0);
     RpcAck report_upstream_error(const ErrorReportData& error);
+    ContentPolicyResult evaluate_response_content(
+        const std::string& lease_token, const std::string& content,
+        const std::string& capability);
     bool is_connected();
 
 private:
