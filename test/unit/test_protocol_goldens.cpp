@@ -3,6 +3,7 @@
 #include "forwarder/forwarder.h"
 #include "protocol/converter.h"
 #include "protocol/formats.h"
+#include <rapidjson/document.h>
 
 #include <array>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -244,6 +246,82 @@ TEST(ProtocolGolden, ResponseGoldensValidateEveryProviderPair) {
                     200, "application/json", converted.body));
             }
         }
+    }
+}
+
+TEST(ProtocolGolden, ErrorGoldensNormalizeEveryProviderPair) {
+    using namespace gateway::protocol;
+
+    struct ErrorGolden {
+        Format format;
+        const char* body;
+    };
+    constexpr std::array errors{
+        ErrorGolden{Format::OpenAIChatCompletions,
+            R"({"error":{"type":"rate_limit_error","message":"Too many requests","code":"rate_limit"}})"},
+        ErrorGolden{Format::OpenAIResponses,
+            R"({"error":{"type":"rate_limit_error","message":"Too many requests"}})"},
+        ErrorGolden{Format::Anthropic,
+            R"({"type":"error","error":{"type":"rate_limit_error","message":"Slow down"}})"},
+        ErrorGolden{Format::Gemini,
+            R"({"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Slow down"}})"},
+    };
+    constexpr std::array targets{
+        Format::OpenAIChatCompletions,
+        Format::OpenAIResponses,
+        Format::Anthropic,
+        Format::Gemini,
+    };
+
+    for (const auto& source : errors) {
+        for (const auto target : targets) {
+            const auto body = Converter::convert_error(source.body, 429, source.format, target);
+            SCOPED_TRACE(std::string("source=") + std::to_string(
+                static_cast<int>(source.format)) + ", target="
+                + std::to_string(static_cast<int>(target)));
+            ASSERT_FALSE(body.empty());
+            rapidjson::Document document;
+            document.Parse(body.data(), body.size());
+            ASSERT_FALSE(document.HasParseError());
+            ASSERT_TRUE(document.IsObject());
+            if (source.format == target) {
+                EXPECT_EQ(body, source.body);
+                continue;
+            }
+            if (target == Format::Anthropic) {
+                ASSERT_TRUE(document.HasMember("type"));
+                ASSERT_TRUE(document.HasMember("error"));
+                EXPECT_STREQ(document["type"].GetString(), "error");
+                EXPECT_STREQ(document["error"]["type"].GetString(), "rate_limit_error");
+            } else if (target == Format::Gemini) {
+                ASSERT_TRUE(document.HasMember("error"));
+                EXPECT_EQ(document["error"]["code"].GetInt(), 429);
+                EXPECT_STREQ(document["error"]["status"].GetString(), "RESOURCE_EXHAUSTED");
+            } else {
+                ASSERT_TRUE(document.HasMember("error"));
+                EXPECT_STREQ(document["error"]["type"].GetString(), "rate_limit_error");
+                EXPECT_TRUE(document["error"].HasMember("param"));
+            }
+        }
+    }
+
+    constexpr std::array status_cases{
+        std::pair{400, "invalid_request_error"},
+        std::pair{401, "authentication_error"},
+        std::pair{403, "permission_error"},
+        std::pair{404, "not_found_error"},
+        std::pair{408, "timeout_error"},
+        std::pair{429, "rate_limit_error"},
+        std::pair{500, "provider_error"},
+    };
+    for (const auto& [status, expected_type] : status_cases) {
+        const auto body = Converter::convert_error(
+            R"({"error":{"type":"invalid_request_error","message":"Provider detail"}})",
+            status, Format::OpenAIChatCompletions, Format::OpenAIResponses);
+        rapidjson::Document document;
+        document.Parse(body.data(), body.size());
+        ASSERT_FALSE(document.HasParseError());
+        EXPECT_STREQ(document["error"]["type"].GetString(), expected_type);
     }
 }
 

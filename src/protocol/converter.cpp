@@ -678,11 +678,129 @@ void add_converted_usage(const rj::Value& source, Format to,
     }
 }
 
+std::string error_member(const rj::Value& root, const char* key) {
+    return root.IsObject() && root.HasMember(key) && root[key].IsString()
+        ? std::string(root[key].GetString(), root[key].GetStringLength())
+        : std::string{};
+}
+
+struct CanonicalError {
+    std::string type;
+    std::string message;
+    std::string code;
+};
+
+CanonicalError canonical_error(std::string_view body, int status_code) {
+    CanonicalError result;
+    rj::Document source;
+    source.Parse(body.data(), body.size());
+    const rj::Value* error = nullptr;
+    if (!source.HasParseError() && source.IsObject()) {
+        if (source.HasMember("error") && source["error"].IsObject())
+            error = &source["error"];
+        else
+            error = &source;
+    }
+    if (error) {
+        result.type = error_member(*error, "type");
+        result.message = error_member(*error, "message");
+        result.code = error_member(*error, "code");
+        if (result.message.empty() && error->HasMember("detail")
+            && (*error)["detail"].IsString())
+            result.message = error_member(*error, "detail");
+    }
+    if (result.message.empty()) result.message = "Provider request failed";
+
+    const auto type = result.type;
+    // HTTP status is authoritative when it carries a standard protocol
+    // meaning; provider payload labels are only a fallback for ambiguous 4xx
+    // responses and non-standard gateways.
+    if (status_code == 401)
+        result.type = "authentication_error";
+    else if (status_code == 403)
+        result.type = "permission_error";
+    else if (status_code == 404)
+        result.type = "not_found_error";
+    else if (status_code == 408 || status_code == 504)
+        result.type = "timeout_error";
+    else if (status_code == 429)
+        result.type = "rate_limit_error";
+    else if (status_code >= 500)
+        result.type = "provider_error";
+    else if (type.find("auth") != std::string::npos)
+        result.type = "authentication_error";
+    else if (type.find("rate") != std::string::npos
+        || type.find("quota") != std::string::npos)
+        result.type = "rate_limit_error";
+    else if (type.find("permission") != std::string::npos
+        || type.find("forbidden") != std::string::npos)
+        result.type = "permission_error";
+    else if (type.find("not_found") != std::string::npos
+        || type == "NOT_FOUND")
+        result.type = "not_found_error";
+    else if (type.find("invalid") != std::string::npos
+        || type == "INVALID_ARGUMENT")
+        result.type = "invalid_request_error";
+    else if (status_code >= 400 && status_code < 500)
+        result.type = "invalid_request_error";
+    else
+        result.type = "provider_error";
+    return result;
+}
+
 }  // namespace
 
 std::string Converter::convert_response(std::string_view body, Format from, Format to,
                                         std::string_view requested_model) {
     return convert_response_checked(body, from, to, requested_model).body;
+}
+
+std::string Converter::convert_error(std::string_view body, int status_code,
+                                     Format from, Format to) {
+    if (from == to) return std::string(body);
+
+    const auto canonical = canonical_error(body, status_code);
+    rj::Document output;
+    output.SetObject();
+    auto& alloc = output.GetAllocator();
+    const auto add_string = [&](rj::Value& object, const char* key,
+                                std::string_view value) {
+        object.AddMember(rj::Value(key, alloc),
+            rj::Value(value.data(), static_cast<rj::SizeType>(value.size()), alloc), alloc);
+    };
+
+    if (to == Format::Anthropic) {
+        rj::Value error(rj::kObjectType);
+        add_string(error, "type", canonical.type);
+        add_string(error, "message", canonical.message);
+        output.AddMember("type", "error", alloc);
+        output.AddMember("error", error, alloc);
+    } else if (to == Format::Gemini) {
+        rj::Value error(rj::kObjectType);
+        error.AddMember("code", status_code, alloc);
+        add_string(error, "message", canonical.message);
+        std::string status = canonical.type == "invalid_request_error"
+            ? "INVALID_ARGUMENT"
+            : canonical.type == "authentication_error" ? "UNAUTHENTICATED"
+            : canonical.type == "permission_error" ? "PERMISSION_DENIED"
+            : canonical.type == "not_found_error" ? "NOT_FOUND"
+            : canonical.type == "rate_limit_error" ? "RESOURCE_EXHAUSTED"
+            : canonical.type == "timeout_error" ? "DEADLINE_EXCEEDED" : "INTERNAL";
+        add_string(error, "status", status);
+        output.AddMember("error", error, alloc);
+    } else {
+        rj::Value error(rj::kObjectType);
+        add_string(error, "message", canonical.message);
+        add_string(error, "type", canonical.type);
+        error.AddMember("param", rj::Value().SetNull(), alloc);
+        if (!canonical.code.empty()) add_string(error, "code", canonical.code);
+        output.AddMember("error", error, alloc);
+    }
+
+    rj::StringBuffer buffer;
+    rj::Writer<rj::StringBuffer> writer(buffer);
+    output.Accept(writer);
+    return std::string(buffer.GetString(), buffer.GetSize());
 }
 
 ResponseConversionResult Converter::convert_response_checked(

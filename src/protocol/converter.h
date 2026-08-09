@@ -53,6 +53,12 @@ public:
                                         Format from, Format to,
                                         std::string_view requested_model = {});
 
+    // Normalize a provider error into the target protocol envelope. Errors
+    // already using the requested protocol are returned unchanged so that
+    // provider-specific fields remain available to that client.
+    static std::string convert_error(std::string_view body, int status_code,
+                                     Format from, Format to);
+
     static ResponseConversionResult convert_response_checked(
         std::string_view body, Format from, Format to,
         std::string_view requested_model = {});
