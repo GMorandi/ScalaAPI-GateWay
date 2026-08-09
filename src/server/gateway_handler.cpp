@@ -769,7 +769,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                         || dispatch_result.reject_code == 7 ? 429
                     : dispatch_result.reject_code == 8 ? 409
                     : dispatch_result.reject_code == 10 ? 409
-                    : dispatch_result.reject_code == 9 ? 404
+                    : dispatch_result.reject_code == 9 ? 403
                     : dispatch_result.reject_code == 11 ? 503
                     : 503;
                 const auto reject_type = dispatch_result.reject_code <= 1
@@ -778,7 +778,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                     : dispatch_result.reject_code == 3 || dispatch_result.reject_code == 5
                         || dispatch_result.reject_code == 7 ? "rate_limit_error"
                     : dispatch_result.reject_code == 8 ? "idempotency_conflict"
-                    : dispatch_result.reject_code == 9 ? "not_found_error"
+                    : dispatch_result.reject_code == 9 ? "permission_error"
                     : dispatch_result.reject_code == 10 ? "idempotency_replay"
                     : dispatch_result.reject_code == 11 ? "pricing_unavailable"
                     : "provider_unavailable";
