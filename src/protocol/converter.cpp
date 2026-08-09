@@ -7,6 +7,7 @@
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
 #include <algorithm>
+#include <cmath>
 #include <initializer_list>
 #include <limits>
 #include <charconv>
@@ -41,6 +42,8 @@ ParsedRequest Converter::parse(std::string_view body, Format hint) {
 }
 
 ValidationResult Converter::validate_embeddings_request(std::string_view body) {
+    constexpr size_t max_inputs = 2048;
+    constexpr int max_dimensions = 8192;
     rapidjson::Document document;
     document.Parse(body.data(), body.size());
     if (document.HasParseError() || !document.IsObject())
@@ -55,6 +58,8 @@ ValidationResult Converter::validate_embeddings_request(std::string_view body) {
         if (input.GetStringLength() == 0) return {false, "input must not be empty"};
     } else if (input.IsArray()) {
         if (input.Empty()) return {false, "input must not be an empty array"};
+        if (input.Size() > max_inputs)
+            return {false, "input must contain at most 2048 strings"};
         for (const auto& value : input.GetArray())
             if (!value.IsString() || value.GetStringLength() == 0)
                 return {false, "input array entries must be non-empty strings"};
@@ -68,11 +73,79 @@ ValidationResult Converter::validate_embeddings_request(std::string_view body) {
                 && std::string_view(encoding.GetString(), encoding.GetStringLength()) != "base64"))
             return {false, "encoding_format must be float or base64"};
     }
-    if (document.HasMember("dimensions")
-        && (!document["dimensions"].IsInt() || document["dimensions"].GetInt() <= 0))
-        return {false, "dimensions must be a positive integer"};
+    if (document.HasMember("dimensions")) {
+        const auto& dimensions = document["dimensions"];
+        if (!dimensions.IsInt() || dimensions.GetInt() <= 0)
+            return {false, "dimensions must be a positive integer"};
+        if (dimensions.GetInt() > max_dimensions)
+            return {false, "dimensions must be at most 8192"};
+    }
     if (document.HasMember("user") && !document["user"].IsString())
         return {false, "user must be a string"};
+    return {true, {}};
+}
+
+ValidationResult Converter::validate_embeddings_response(
+    std::string_view request_body, std::string_view response_body) {
+    rapidjson::Document request;
+    request.Parse(request_body.data(), request_body.size());
+    if (request.HasParseError() || !request.IsObject() || !request.HasMember("input"))
+        return {false, "Embedding request could not be inspected"};
+
+    const auto& input = request["input"];
+    const size_t expected_count = input.IsArray() ? input.Size() : 1;
+    int expected_dimensions = 0;
+    if (request.HasMember("dimensions") && request["dimensions"].IsInt())
+        expected_dimensions = request["dimensions"].GetInt();
+    std::string_view encoding = "float";
+    if (request.HasMember("encoding_format") && request["encoding_format"].IsString())
+        encoding = {request["encoding_format"].GetString(),
+                    request["encoding_format"].GetStringLength()};
+
+    rapidjson::Document response;
+    response.Parse(response_body.data(), response_body.size());
+    if (response.HasParseError() || !response.IsObject())
+        return {false, "Provider returned an invalid embeddings JSON object"};
+    if (!response.HasMember("data") || !response["data"].IsArray())
+        return {false, "Provider embeddings response is missing data"};
+    const auto& data = response["data"];
+    if (data.Size() != expected_count)
+        return {false, "Provider returned an unexpected embeddings count"};
+
+    for (rapidjson::SizeType i = 0; i < data.Size(); ++i) {
+        const auto& item = data[i];
+        if (!item.IsObject() || !item.HasMember("index") || !item["index"].IsInt()
+            || item["index"].GetInt() != static_cast<int>(i)
+            || !item.HasMember("embedding"))
+            return {false, "Provider returned a malformed embedding item"};
+        const auto& embedding = item["embedding"];
+        if (encoding == "base64") {
+            if (!embedding.IsString() || embedding.GetStringLength() == 0)
+                return {false, "Provider returned a non-base64 embedding"};
+            if (expected_dimensions > 0) {
+                const auto expected_bytes = static_cast<size_t>(expected_dimensions) * 4;
+                const auto expected_length = ((expected_bytes + 2) / 3) * 4;
+                if (embedding.GetStringLength() != expected_length)
+                    return {false, "Provider returned an unexpected base64 embedding dimension"};
+            }
+        } else {
+            if (!embedding.IsArray() || embedding.Empty())
+                return {false, "Provider returned a non-float embedding"};
+            if (expected_dimensions > 0 && embedding.Size() != static_cast<size_t>(expected_dimensions))
+                return {false, "Provider returned an unexpected embedding dimension"};
+            for (const auto& value : embedding.GetArray())
+                if (!value.IsNumber() || !std::isfinite(value.GetDouble()))
+                    return {false, "Provider returned a non-finite embedding value"};
+        }
+    }
+    if (!response.HasMember("usage") || !response["usage"].IsObject()
+        || !response["usage"].HasMember("prompt_tokens")
+        || !response["usage"]["prompt_tokens"].IsInt()
+        || response["usage"]["prompt_tokens"].GetInt() <= 0
+        || !response["usage"].HasMember("total_tokens")
+        || !response["usage"]["total_tokens"].IsInt()
+        || response["usage"]["total_tokens"].GetInt() <= 0)
+        return {false, "Provider embeddings response is missing positive usage"};
     return {true, {}};
 }
 

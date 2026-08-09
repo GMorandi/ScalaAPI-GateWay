@@ -1004,6 +1004,25 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
             }
         }
+        if (forward_result.status_code >= 200 && forward_result.status_code < 400
+            && spec.capability == Capability::Embeddings) {
+            auto validation = protocol::Converter::validate_embeddings_response(
+                req.body, resp.body);
+            if (!validation.valid) {
+                auto abort_ack = dispatch_.abort(dispatch_result.lease_token,
+                    "embeddings_response_invalid", dispatch::LeaseAbortDisposition::Unknown,
+                    forward_result.provider_status_code);
+                if (!abort_ack.acknowledged())
+                    LOG_ERROR("Embeddings response abort failed for request {}: {}",
+                        request_id, abort_ack.error_code);
+                terminal_abort = true;
+                forward_result.status_code = 502;
+                resp.status_code = 502;
+                resp.content_type = "application/json";
+                resp.body = error_json("provider_protocol_error", validation.message);
+                metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
     }
 
     if (forward_result.malformed_usage) {

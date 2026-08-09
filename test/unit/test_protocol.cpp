@@ -314,6 +314,27 @@ TEST(EmbeddingsValidation, RejectsInvalidInputAndOptions) {
         R"({"model":"text-embedding-3-small","input":"ok","dimensions":0})").valid);
     EXPECT_FALSE(Converter::validate_embeddings_request(
         R"({"model":"text-embedding-3-small","input":"ok","encoding_format":"hex"})").valid);
+    EXPECT_FALSE(Converter::validate_embeddings_request(
+        R"({"model":"text-embedding-3-small","input":"ok","dimensions":8193})").valid);
+}
+
+TEST(EmbeddingsValidation, AcceptsMatchingFloatAndBase64Responses) {
+    EXPECT_TRUE(Converter::validate_embeddings_response(
+        R"({"model":"text-embedding-3-small","input":["hello","world"],"dimensions":3,"encoding_format":"float"})",
+        R"({"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]},{"object":"embedding","index":1,"embedding":[0.4,0.5,0.6]}],"usage":{"prompt_tokens":2,"total_tokens":2}})").valid);
+    EXPECT_TRUE(Converter::validate_embeddings_response(
+        R"({"model":"text-embedding-3-small","input":"hello","dimensions":2,"encoding_format":"base64"})",
+        R"({"object":"list","data":[{"object":"embedding","index":0,"embedding":"AAAAAAAAAAAA"}],"usage":{"prompt_tokens":1,"total_tokens":1}})").valid);
+}
+
+TEST(EmbeddingsValidation, RejectsMalformedProviderResponses) {
+    const auto request = R"({"model":"text-embedding-3-small","input":["hello","world"],"dimensions":3})";
+    EXPECT_FALSE(Converter::validate_embeddings_response(request,
+        R"({"data":[{"index":0,"embedding":[0.1,0.2,0.3]}],"usage":{"prompt_tokens":2,"total_tokens":2}})").valid);
+    EXPECT_FALSE(Converter::validate_embeddings_response(request,
+        R"({"data":[{"index":0,"embedding":[0.1,0.2,0.3]},{"index":1,"embedding":[0.4,null,0.6]}],"usage":{"prompt_tokens":2,"total_tokens":2}})").valid);
+    EXPECT_FALSE(Converter::validate_embeddings_response(request,
+        R"({"data":[{"index":0,"embedding":[0.1,0.2,0.3]},{"index":1,"embedding":[0.4,0.5,0.6]}],"usage":{"prompt_tokens":0,"total_tokens":0}})").valid);
 }
 
 TEST(RealtimeParse, ExtractsModelFromSessionAndResponseEvents) {
