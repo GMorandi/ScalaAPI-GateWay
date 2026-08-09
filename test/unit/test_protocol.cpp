@@ -633,6 +633,36 @@ TEST(StreamPipe, RecognizesOpenAITerminalEvent) {
     EXPECT_FALSE(result.provider_disconnect);
 }
 
+TEST(StreamPipe, PreservesUsageFromTruncatedOpenAIStream) {
+    const std::vector<std::string> chunks = {
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5,\"total_tokens\":12}}\n\n"
+    };
+    size_t index = 0;
+    gateway::forwarder::StreamPipe pipe({}, gateway::forwarder::ProtocolMode::Passthrough,
+                                        Format::OpenAIChatCompletions,
+                                        Format::OpenAIChatCompletions);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (index == chunks.size()) {
+                errno = ECONNRESET;
+                return -1;
+            }
+            const auto& chunk = chunks[index++];
+            if (chunk.size() > capacity) return -1;
+            std::memcpy(out, chunk.data(), chunk.size());
+            return static_cast<ssize_t>(chunk.size());
+        },
+        [](const char*, size_t size) -> ssize_t { return static_cast<ssize_t>(size); });
+
+    EXPECT_TRUE(result.incomplete);
+    EXPECT_TRUE(result.provider_disconnect);
+    EXPECT_TRUE(result.terminal_event_seen);
+    EXPECT_EQ(result.input_tokens, 7);
+    EXPECT_EQ(result.output_tokens, 5);
+    EXPECT_FALSE(result.provider_usage_json.empty());
+}
+
 TEST(StreamPipe, TreatsZeroLengthClientWriteAsDisconnect) {
     bool read_once = false;
     gateway::forwarder::StreamPipe pipe({}, gateway::forwarder::ProtocolMode::Passthrough,

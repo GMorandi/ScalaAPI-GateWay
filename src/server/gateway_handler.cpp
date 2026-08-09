@@ -1026,6 +1026,17 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
     auto& upstream = dispatch_result.upstream;
     const auto media_response_usage = protocol::Converter::parse_media_response(
         resp.body, matched.operation);
+    // A truncated Provider stream remains ambiguous unless the Provider sent
+    // a valid usage object before the connection ended. In that case retain
+    // the normal settlement event in the durable outbox after the unknown
+    // abort above; Platform will settle the reconciliation-needed lease
+    // exactly once and replay it safely after a Gateway restart.
+    const bool late_usage_candidate = is_stream && forward_result.stream_incomplete
+        && !forward_result.malformed_usage
+        && !forward_result.provider_usage_json.empty()
+        && (forward_result.input_tokens > 0 || forward_result.output_tokens > 0
+            || forward_result.cache_create_tokens > 0 || forward_result.cache_read_tokens > 0
+            || forward_result.reasoning_tokens > 0);
     usage::UsageEvent event{
         .lease_token = dispatch_result.lease_token,
         .request_id = request_id,
@@ -1069,7 +1080,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         .response_content_type = persist_response ? resp.content_type : "",
         .response_body = persist_response ? resp.body : "",
     };
-    if (!terminal_abort && !defer_media_usage) {
+    if ((!terminal_abort || late_usage_candidate) && !defer_media_usage) {
         try {
             collector_.record(event);
             metrics.usage_events_buffered.fetch_add(1, std::memory_order_relaxed);
