@@ -184,7 +184,7 @@ struct RpcAck {
 struct ContentPolicyResult {
     bool evaluated = false;
     bool allowed = false;
-    bool retryable = true;
+    bool retryable = false;
     std::string error_code = "platform_unavailable";
     int64_t matched_rule_id = 0;
     std::string message;
@@ -198,7 +198,8 @@ enum class ContentPolicyDisposition {
 
 inline ContentPolicyDisposition content_policy_disposition(
     const ContentPolicyResult& result) {
-    if (!result.evaluated) return ContentPolicyDisposition::FailClosed;
+    if (!result.evaluated || result.retryable)
+        return ContentPolicyDisposition::FailClosed;
     return result.allowed
         ? ContentPolicyDisposition::Allow : ContentPolicyDisposition::Block;
 }

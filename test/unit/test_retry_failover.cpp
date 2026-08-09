@@ -50,6 +50,15 @@ TEST(ContentPolicyDisposition, FailsClosedWhenPlatformDidNotEvaluate) {
         gateway::dispatch::ContentPolicyDisposition::FailClosed);
 }
 
+TEST(ContentPolicyDisposition, FailsClosedWhenClassifierIsUnavailable) {
+    gateway::dispatch::ContentPolicyResult result;
+    result.evaluated = true;
+    result.allowed = false;
+    result.retryable = true;
+    EXPECT_EQ(gateway::dispatch::content_policy_disposition(result),
+        gateway::dispatch::ContentPolicyDisposition::FailClosed);
+}
+
 TEST(RetryPolicy, ComputeDelayExponential) {
     RetryPolicy policy;
     policy.base_delay_ms = 100;
