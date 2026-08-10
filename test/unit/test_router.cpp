@@ -109,6 +109,7 @@ TEST(CapabilityRegistryTest, CoversApprovedMediaAndRealtimeRoutes) {
         {"POST", "/v1/videos/extensions", "videos"},
         {"GET", "/v1/videos/request_1/content", "videos"},
         {"GET", "/v1/responses", "realtime"},
+        {"GET", "/v1/responses/resp_123", "responses_subpath"},
         {"POST", "/v1/live", "realtime"},
         {"GET", "/backend-api/codex/call_123", "realtime"},
         {"GET", "/v1beta/models/gemini-2.5-pro", "gemini_models"},
@@ -134,6 +135,7 @@ TEST(CapabilityRegistryTest, RejectsUnsafeDynamicSegmentsBeforeDispatch) {
     EXPECT_EQ(match_capability("GET", "/v1beta/models/..:generateContent").spec, nullptr);
     EXPECT_EQ(match_capability("POST", "/v1/images/batches/batch_1/not-a-route").spec, nullptr);
     EXPECT_EQ(match_capability("GET", "/v1/videos/request_1/metadata").spec, nullptr);
+    EXPECT_EQ(match_capability("GET", "/v1/responses/resp_1/cancel").spec, nullptr);
 }
 
 TEST(CapabilityRegistryTest, ValidatesQueryBeforeDispatch) {

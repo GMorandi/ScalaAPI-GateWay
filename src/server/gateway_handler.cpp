@@ -609,7 +609,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             parsed.model = std::string(req.path.substr(start, end - start));
         }
     }
-    const bool needs_model = chat_capability(spec.capability)
+    const bool needs_model = (chat_capability(spec.capability)
+        && spec.capability != Capability::ResponsesSubpath)
         || spec.capability == Capability::Embeddings
         || spec.capability == Capability::CountTokens
         || matched.operation == "images_generations" || matched.operation == "images_edits"
@@ -1196,7 +1197,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
     // enqueuing a zero-token usage event that cannot carry a price snapshot.
     const bool non_billable_control = spec.capability == Capability::Models
         || spec.capability == Capability::GeminiModels
-        || spec.capability == Capability::CountTokens;
+        || spec.capability == Capability::CountTokens
+        || spec.capability == Capability::ResponsesSubpath;
     if (non_billable_control && !terminal_abort
         && forward_result.status_code >= 200 && forward_result.status_code < 400) {
         const auto abort_ack = dispatch_.abort(

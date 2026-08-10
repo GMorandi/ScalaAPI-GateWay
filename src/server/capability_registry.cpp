@@ -121,6 +121,10 @@ MatchedCapability route_openai(std::string_view method, std::string_view path,
         && is_safe_path_suffix(relative.substr(std::string_view("/responses").size()))) {
         return {&kResponsesSubpath, "responses_subpath", force_platform};
     }
+    if (relative.starts_with("/responses/") && method == "GET"
+        && safe_segment(relative.substr(std::string_view("/responses/").size()))) {
+        return {&kResponsesSubpath, "responses_get", force_platform};
+    }
     if (auto r = match("/responses", "GET", kRealtime, "responses_websocket"); r.spec) return r;
     if (auto r = match("/live", "POST", kRealtime, "live_create"); r.spec) return r;
     if (relative.starts_with("/live/") && method == "GET"
