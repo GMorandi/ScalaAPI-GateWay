@@ -97,7 +97,10 @@ void UsageReporter::run_loop() {
                 1, std::memory_order_relaxed);
             LOG_WARN("Usage report retained for retry: lease={} error={} retryable={}",
                      report.lease_token, ack.error_code, ack.retryable);
-            break;
+            // A retryable result belongs to this lease only. Do not let an
+            // unrelated transient or reconciliation-needed lease block every
+            // later usage event in the durable outbox.
+            continue;
         }
     }
 

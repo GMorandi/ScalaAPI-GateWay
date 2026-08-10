@@ -1190,6 +1190,27 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         }
     }
 
+    // Catalog and token-count calls reserve an account lease for routing and
+    // provider isolation, but they do not represent billable generation.
+    // Release their hold through the normal no-charge terminal path instead of
+    // enqueuing a zero-token usage event that cannot carry a price snapshot.
+    const bool non_billable_control = spec.capability == Capability::Models
+        || spec.capability == Capability::GeminiModels
+        || spec.capability == Capability::CountTokens;
+    if (non_billable_control && !terminal_abort
+        && forward_result.status_code >= 200 && forward_result.status_code < 400) {
+        const auto abort_ack = dispatch_.abort(
+            dispatch_result.lease_token, "non_billable_control",
+            dispatch::LeaseAbortDisposition::NoCharge,
+            forward_result.provider_status_code);
+        if (!abort_ack.acknowledged()) {
+            LOG_ERROR("Control request release failed for {} lease {}: {}",
+                request_id, dispatch_result.lease_token, abort_ack.error_code);
+        } else {
+            terminal_abort = true;
+        }
+    }
+
     // --- Step 8: Report usage (fire-and-forget) ---
     const bool persist_response = !is_stream && !terminal_abort && !defer_media_usage
         && !media_response_overridden && forward_result.status_code >= 200
