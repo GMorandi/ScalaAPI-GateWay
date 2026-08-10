@@ -116,7 +116,9 @@ MatchedCapability route_openai(std::string_view method, std::string_view path,
     if (auto r = match("/messages", "POST", force_platform.empty() ? kMessages : kAntigravity, "messages"); r.spec) return r;
     if (auto r = match("/messages/count_tokens", "POST", kCountTokens, "count_tokens"); r.spec) return r;
     if (auto r = match("/chat/completions", "POST", kChat, "chat_completions"); r.spec) return r;
+    if (auto r = match("/responses/compact", "POST", kResponses, "responses_compact"); r.spec) return r;
     if (auto r = match("/responses", "POST", kResponses, "responses"); r.spec) return r;
+    if (relative == "/responses/compact") return {};
     if (relative.starts_with("/responses/") && method == "POST") {
         constexpr std::string_view cancel_suffix = "/cancel";
         const auto response_suffix = relative.substr(std::string_view("/responses/").size());

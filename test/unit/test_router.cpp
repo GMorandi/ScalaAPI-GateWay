@@ -106,6 +106,7 @@ TEST(CapabilityRegistryTest, CoversApprovedMediaAndRealtimeRoutes) {
         {"POST", "/v1/images/edits/async", "images_async"},
         {"GET", "/v1/images/tasks/task_1", "images_async"},
         {"DELETE", "/v1/images/batches/batch_1", "images_batch"},
+        {"POST", "/v1/responses/compact", "responses"},
         {"POST", "/v1/videos/extensions", "videos"},
         {"GET", "/v1/videos/request_1/content", "videos"},
         {"GET", "/v1/responses", "realtime"},
@@ -135,6 +136,8 @@ TEST(CapabilityRegistryTest, RejectsGeminiGenerationWithoutActionSeparator) {
 TEST(CapabilityRegistryTest, RejectsUnsafeDynamicSegmentsBeforeDispatch) {
     EXPECT_EQ(match_capability("GET", "/v1/images/tasks/../../etc/passwd").spec, nullptr);
     EXPECT_EQ(match_capability("POST", "/v1/responses/../../admin").spec, nullptr);
+    EXPECT_EQ(match_capability("GET", "/v1/responses/compact").spec, nullptr);
+    EXPECT_EQ(match_capability("POST", "/v1/responses/compact/extra").spec, nullptr);
     EXPECT_EQ(match_capability("POST", "/v1/responses/resp_1/metadata").spec, nullptr);
     EXPECT_EQ(match_capability("GET", "/v1/responses/resp_1/metadata").spec, nullptr);
     EXPECT_EQ(match_capability("GET", "/v1beta/models/..:generateContent").spec, nullptr);
