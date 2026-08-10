@@ -90,6 +90,7 @@ bool chat_capability(Capability capability) {
 }
 
 std::string media_action(std::string_view operation) {
+    if (operation.ends_with("list")) return "list";
     if (operation.ends_with("cancel")) return "cancel";
     if (operation.ends_with("content") || operation.ends_with("download")) return "content";
     if (operation.ends_with("delete_outputs")) return "delete_outputs";
@@ -100,6 +101,7 @@ std::string media_action(std::string_view operation) {
 
 bool media_control_operation(std::string_view operation) {
     return operation == "images_task_get" || operation == "images_batch_get"
+        || operation == "images_batch_list"
         || operation == "images_batch_items" || operation == "images_batch_download"
         || operation == "images_batch_cancel" || operation == "images_batch_delete"
         || operation == "images_batch_delete_outputs" || operation == "images_batch_item_content"
@@ -149,6 +151,18 @@ std::string media_view_json(const dispatch::MediaOperationResult& result) {
     rapidjson::StringBuffer buffer;
     rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
     output.Accept(writer);
+    return buffer.GetString();
+}
+
+std::string media_items_json(const dispatch::MediaOperationResult& result) {
+    rapidjson::Document metadata;
+    metadata.Parse(result.output_metadata.c_str(), result.output_metadata.size());
+    if (metadata.HasParseError() || !metadata.IsObject()
+        || !metadata.HasMember("data") || !metadata["data"].IsArray())
+        return "[]";
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    metadata["data"].Accept(writer);
     return buffer.GetString();
 }
 
@@ -507,9 +521,16 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         if (!result.accepted) {
             resp.body = error_json(result.error_code, result.error_message);
             metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+        } else if (action == "list") {
+            resp.status_code = 200;
+            resp.body = result.output_metadata.empty()
+                ? R"({"object":"list","data":[],"has_more":false})"
+                : result.output_metadata;
+            resp.headers.emplace_back("Content-Type", "application/json");
+            resp.headers.emplace_back("Cache-Control", "no-store");
         } else if (action == "items") {
             resp.status_code = 200;
-            resp.body = result.output_metadata.empty() ? "[]" : result.output_metadata;
+            resp.body = media_items_json(result);
             resp.headers.emplace_back("Content-Type", "application/json");
             resp.headers.emplace_back("Cache-Control", "no-store");
         } else if (action == "content") {

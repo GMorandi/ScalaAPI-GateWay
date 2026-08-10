@@ -105,6 +105,7 @@ TEST(CapabilityRegistryTest, CoversApprovedMediaAndRealtimeRoutes) {
         {"POST", "/v1/images/generations", "images_sync"},
         {"POST", "/v1/images/edits/async", "images_async"},
         {"GET", "/v1/images/tasks/task_1", "images_async"},
+        {"GET", "/v1/images/batches", "images_batch"},
         {"DELETE", "/v1/images/batches/batch_1", "images_batch"},
         {"POST", "/v1/responses/compact", "responses"},
         {"POST", "/v1/videos/extensions", "videos"},
