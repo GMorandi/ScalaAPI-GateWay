@@ -319,6 +319,10 @@ TEST(EmbeddingsValidation, RejectsInvalidInputAndOptions) {
         R"({"model":"text-embedding-3-small","input":"ok","encoding_format":"hex"})").valid);
     EXPECT_FALSE(Converter::validate_embeddings_request(
         R"({"model":"text-embedding-3-small","input":"ok","dimensions":8193})").valid);
+    EXPECT_FALSE(Converter::validate_embeddings_request(
+        R"({"model":"jina-embeddings-v5-text-small","input":"ok","dimensions":1025})").valid);
+    EXPECT_FALSE(Converter::validate_embeddings_request(
+        R"({"model":"gemini-embedding-001","input":"ok","dimensions":3073})").valid);
 }
 
 TEST(EmbeddingsValidation, AcceptsMatchingFloatAndBase64Responses) {

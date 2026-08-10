@@ -1,0 +1,6 @@
+{
+  "model": "gemini-embedding-001",
+  "input": "Provider profile",
+  "dimensions": 4,
+  "encoding_format": "base64"
+}

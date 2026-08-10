@@ -142,6 +142,20 @@ TEST(ProtocolGolden, ResponsesValidateAndConvertAcrossProviderGroups) {
     EXPECT_NE(errors.find("rate_limit_error"), std::string::npos);
 }
 
+TEST(ProtocolGolden, EmbeddingProviderProfilesValidateVersionedShapes) {
+    using namespace gateway::protocol;
+
+    const auto jina_request = read_fixture("openai_embeddings_jina_request_v1.json");
+    const auto jina_response = read_fixture("openai_embeddings_jina_response_v1.json");
+    const auto gemini_request = read_fixture("openai_embeddings_gemini_request_v1.json");
+    const auto gemini_response = read_fixture("openai_embeddings_gemini_response_v1.json");
+
+    EXPECT_TRUE(Converter::validate_embeddings_request(jina_request).valid);
+    EXPECT_TRUE(Converter::validate_embeddings_response(jina_request, jina_response).valid);
+    EXPECT_TRUE(Converter::validate_embeddings_request(gemini_request).valid);
+    EXPECT_TRUE(Converter::validate_embeddings_response(gemini_request, gemini_response).valid);
+}
+
 TEST(ProtocolGolden, RequestGoldensCoverEveryProviderPair) {
     using namespace gateway::protocol;
 

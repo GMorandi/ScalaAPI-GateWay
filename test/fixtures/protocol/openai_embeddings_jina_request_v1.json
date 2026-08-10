@@ -1,0 +1,6 @@
+{
+  "model": "jina-embeddings-v5-text-small",
+  "input": ["Vienna weather", "Provider profile"],
+  "dimensions": 5,
+  "encoding_format": "float"
+}

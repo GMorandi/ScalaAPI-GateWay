@@ -1,0 +1,7 @@
+{
+  "object": "list",
+  "data": [
+    {"object": "embedding", "index": 0, "embedding": "AAAAAAAAAAAAAAAAAAAAAA=="}
+  ],
+  "usage": {"prompt_tokens": 5, "total_tokens": 5}
+}

@@ -74,12 +74,20 @@ ValidationResult Converter::validate_embeddings_request(std::string_view body) {
                 && std::string_view(encoding.GetString(), encoding.GetStringLength()) != "base64"))
             return {false, "encoding_format must be float or base64"};
     }
+    int max_dimensions_for_model = max_dimensions;
+    const std::string_view model(document["model"].GetString(),
+                                 document["model"].GetStringLength());
+    if (model == "jina-embeddings-v5-text-small")
+        max_dimensions_for_model = 1024;
+    else if (model == "gemini-embedding-001")
+        max_dimensions_for_model = 3072;
+
     if (document.HasMember("dimensions")) {
         const auto& dimensions = document["dimensions"];
         if (!dimensions.IsInt() || dimensions.GetInt() <= 0)
             return {false, "dimensions must be a positive integer"};
-        if (dimensions.GetInt() > max_dimensions)
-            return {false, "dimensions must be at most 8192"};
+        if (dimensions.GetInt() > max_dimensions_for_model)
+            return {false, "dimensions exceed the model profile maximum"};
     }
     if (document.HasMember("user") && !document["user"].IsString())
         return {false, "user must be a string"};
