@@ -110,6 +110,7 @@ TEST(CapabilityRegistryTest, CoversApprovedMediaAndRealtimeRoutes) {
         {"GET", "/v1/videos/request_1/content", "videos"},
         {"GET", "/v1/responses", "realtime"},
         {"GET", "/v1/responses/resp_123", "responses_subpath"},
+        {"GET", "/v1/responses/resp_123/input_items", "responses_subpath"},
         {"DELETE", "/v1/responses/resp_123", "responses_subpath"},
         {"POST", "/v1/responses/resp_123/cancel", "responses_subpath"},
         {"POST", "/v1/live", "realtime"},
@@ -135,6 +136,7 @@ TEST(CapabilityRegistryTest, RejectsUnsafeDynamicSegmentsBeforeDispatch) {
     EXPECT_EQ(match_capability("GET", "/v1/images/tasks/../../etc/passwd").spec, nullptr);
     EXPECT_EQ(match_capability("POST", "/v1/responses/../../admin").spec, nullptr);
     EXPECT_EQ(match_capability("POST", "/v1/responses/resp_1/metadata").spec, nullptr);
+    EXPECT_EQ(match_capability("GET", "/v1/responses/resp_1/metadata").spec, nullptr);
     EXPECT_EQ(match_capability("GET", "/v1beta/models/..:generateContent").spec, nullptr);
     EXPECT_EQ(match_capability("POST", "/v1/images/batches/batch_1/not-a-route").spec, nullptr);
     EXPECT_EQ(match_capability("GET", "/v1/videos/request_1/metadata").spec, nullptr);

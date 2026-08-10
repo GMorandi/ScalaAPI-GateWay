@@ -124,9 +124,14 @@ MatchedCapability route_openai(std::string_view method, std::string_view path,
             && safe_segment(response_suffix.substr(0, response_suffix.size() - cancel_suffix.size())))
             return {&kResponsesSubpath, "responses_cancel", force_platform};
     }
-    if (relative.starts_with("/responses/") && method == "GET"
-        && safe_segment(relative.substr(std::string_view("/responses/").size()))) {
-        return {&kResponsesSubpath, "responses_get", force_platform};
+    if (relative.starts_with("/responses/") && method == "GET") {
+        constexpr std::string_view input_items_suffix = "/input_items";
+        const auto response_suffix = relative.substr(std::string_view("/responses/").size());
+        if (response_suffix.ends_with(input_items_suffix)
+            && safe_segment(response_suffix.substr(0, response_suffix.size() - input_items_suffix.size())))
+            return {&kResponsesSubpath, "responses_input_items", force_platform};
+        if (safe_segment(response_suffix))
+            return {&kResponsesSubpath, "responses_get", force_platform};
     }
     if (relative.starts_with("/responses/") && method == "DELETE"
         && safe_segment(relative.substr(std::string_view("/responses/").size()))) {
