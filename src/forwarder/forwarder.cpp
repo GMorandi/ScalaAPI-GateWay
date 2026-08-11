@@ -6,7 +6,9 @@
 #include <photon/net/http/client.h>
 #include <photon/net/http/message.h>
 #include <photon/thread/thread.h>
+#include <photon/thread/thread11.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <cctype>
@@ -310,11 +312,66 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         op->set_proxy(target.proxy_url);
     }
 
+    std::atomic<bool> forwarding_done{false};
+    std::atomic<bool> client_cancelled{false};
+    photon::join_handle* cancellation_watcher = nullptr;
+    if (request.stream && request.client_disconnected) {
+        cancellation_watcher = photon::thread_enable_join(photon::thread_create11([&] {
+            while (!forwarding_done.load(std::memory_order_acquire)) {
+                if (!client_cancelled.load(std::memory_order_relaxed)
+                    && request.client_disconnected()) {
+                    client_cancelled.store(true, std::memory_order_release);
+                }
+                if (client_cancelled.load(std::memory_order_acquire)) {
+                    auto* provider_stream = op->req.get_socket_stream();
+                    if (provider_stream) {
+                        provider_stream->shutdown(ShutdownHow::ReadWrite);
+                        break;
+                    }
+                }
+                photon::thread_usleep(25'000);
+            }
+        }));
+    }
+    auto stop_cancellation_watcher = [&] {
+        forwarding_done.store(true, std::memory_order_release);
+        if (cancellation_watcher) {
+            photon::thread_join(cancellation_watcher);
+            cancellation_watcher = nullptr;
+        }
+    };
+    auto apply_transport_cancellation = [&] {
+        if (!client_cancelled.load(std::memory_order_acquire)
+            || result.client_disconnect) return;
+        result.status_code = result.output_started ? 502 : 499;
+        result.stream = request.stream;
+        result.client_disconnect = true;
+        result.stream_incomplete = true;
+        result.disconnect_reason = "client_disconnect";
+        result.cancellation_reason = result.output_started
+            ? "client_disconnect_after_output" : "client_disconnect_before_output";
+        result.error = result.output_started
+            ? "client disconnected before provider stream completion"
+            : "client disconnected before response output";
+    };
+
     auto start = std::chrono::steady_clock::now();
     int ret = op->call();
 
     if (ret < 0) {
         const auto call_errno = errno;
+        stop_cancellation_watcher();
+        if (client_cancelled.load(std::memory_order_acquire)) {
+            result.status_code = 499;
+            result.stream = true;
+            result.client_disconnect = true;
+            result.stream_incomplete = true;
+            result.disconnect_reason = "client_disconnect";
+            result.cancellation_reason = "client_disconnect_before_output";
+            result.error = "client disconnected before provider response headers";
+            http_client->destroy_operation(op);
+            return result;
+        }
         const bool timed_out = call_errno == ETIMEDOUT;
         // A connection reset before Provider headers is an availability
         // failure. Keep the protocol-error contract reserved for a bounded
@@ -381,6 +438,8 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
             if (resp_body.size() + static_cast<size_t>(n) > impl_->config.max_response_body_size) {
                 result.status_code = 502;
                 result.error = "upstream response exceeded configured body limit";
+                stop_cancellation_watcher();
+                apply_transport_cancellation();
                 http_client->destroy_operation(op);
                 return result;
             }
@@ -459,6 +518,10 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         result.policy_failed_closed = stream_result.policy_failed_closed;
         result.policy_error_code = std::move(stream_result.policy_error_code);
         result.policy_message = std::move(stream_result.policy_message);
+        if (client_cancelled.load(std::memory_order_acquire)) {
+            result.client_disconnect = true;
+            result.stream_incomplete = true;
+        }
         if (result.policy_blocked || result.policy_failed_closed) {
             result.status_code = result.policy_blocked ? 400 : 503;
             result.content_type = "text/event-stream";
@@ -498,6 +561,8 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         }
     }
 
+    stop_cancellation_watcher();
+    apply_transport_cancellation();
     http_client->destroy_operation(op);
     return result;
 }

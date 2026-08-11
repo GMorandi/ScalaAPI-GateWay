@@ -16,6 +16,7 @@
 #include <photon/thread/thread.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <cerrno>
 #include <cstring>
 
 namespace gateway::server {
@@ -225,6 +226,16 @@ static int http_handler(void* self, photon::net::http::Request& req,
         .stream_timeout_ms = ctx->config.stream_timeout_ms,
         .set_client_timeout_us = [stream = req.get_socket_stream()](uint64_t timeout_us) {
             if (stream) stream->timeout(timeout_us);
+        },
+        .client_disconnected = [stream = req.get_socket_stream()] {
+            if (!stream) return false;
+            const auto fd = stream->get_underlay_fd();
+            if (fd < 0) return false;
+            char byte = 0;
+            const auto received = ::recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+            if (received == 0) return true;
+            return received < 0 && errno != EAGAIN && errno != EWOULDBLOCK
+                && errno != EINTR;
         },
     };
 

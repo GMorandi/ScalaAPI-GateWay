@@ -20,6 +20,7 @@ using ResponseStartFn = std::function<void(
     int, std::string_view,
     const std::vector<std::pair<std::string, std::string>>&)>;
 using OutputStartedFn = std::function<void()>;
+using ClientDisconnectedFn = std::function<bool()>;
 
 struct ForwardRequest {
     std::string_view method;
@@ -37,6 +38,7 @@ struct ForwardRequest {
     StreamPolicyFn stream_policy;
     ResponseStartFn response_start;
     OutputStartedFn output_started;
+    ClientDisconnectedFn client_disconnected;
 };
 
 struct ForwardResult {

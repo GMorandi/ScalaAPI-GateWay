@@ -34,6 +34,7 @@ struct HttpRequest {
     std::vector<std::pair<std::string, std::string>> headers;
     uint32_t stream_timeout_ms = 300'000;
     std::function<void(uint64_t)> set_client_timeout_us;
+    std::function<bool()> client_disconnected;
 };
 
 struct HttpResponse {

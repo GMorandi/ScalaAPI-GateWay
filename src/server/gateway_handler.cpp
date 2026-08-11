@@ -929,6 +929,7 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                               request_id, dispatch_result.lease_token, ack.error_code);
                 }
             },
+            .client_disconnected = req.client_disconnected,
         };
         forward_result = forwarder_->forward(target, forward_request, stream_mode);
         platform::FaultInjection::crash_if_configured(
