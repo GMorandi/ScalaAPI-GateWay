@@ -72,6 +72,8 @@ struct ForwardResult {
 };
 
 bool is_explicit_provider_rejection(const ForwardResult& result);
+bool validate_target_auth_headers(
+    const std::vector<std::pair<std::string, std::string>>& headers);
 
 struct ForwardConfig {
     // Applies to non-streaming upstream calls. Streaming calls use the total

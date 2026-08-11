@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <limits>
+#include <unordered_set>
 #include <rapidjson/document.h>
 #include <rapidjson/writer.h>
 #include <rapidjson/stringbuffer.h>
@@ -93,6 +94,39 @@ bool is_explicit_provider_rejection(const ForwardResult& result) {
     return result.provider_response_received && result.provider_status_code >= 400;
 }
 
+static bool hop_by_hop(std::string_view name);
+
+bool validate_target_auth_headers(
+    const std::vector<std::pair<std::string, std::string>>& headers) {
+    if (headers.size() > 16) return false;
+    std::unordered_set<std::string> names;
+    size_t total_bytes = 0;
+    for (const auto& [name, value] : headers) {
+        if (name.empty() || name.size() > 64 || value.empty() || value.size() > 4096)
+            return false;
+        for (const auto ch : name) {
+            const auto byte = static_cast<unsigned char>(ch);
+            if (!std::isalnum(byte)
+                && std::string_view("!#$%&'*+-.^_`|~").find(ch) == std::string_view::npos)
+                return false;
+        }
+        if (value.find_first_of("\r\n") != std::string::npos
+            || value.find('\0') != std::string::npos)
+            return false;
+        const auto key = lower(name);
+        if (!names.insert(key).second) return false;
+        if (hop_by_hop(key) || key == "host" || key == "content-length"
+            || key == "content-type" || key == "accept" || key == "user-agent"
+            || key == "x-request-id" || key == "idempotency-key"
+            || key == "api_key" || key == "anthropic_version"
+            || key == "anthropic_beta" || key == "provider_scenario")
+            return false;
+        total_bytes += name.size() + value.size();
+        if (total_bytes > 32 * 1024) return false;
+    }
+    return true;
+}
+
 static bool hop_by_hop(std::string_view name) {
     const auto key = lower(name);
     return key == "connection" || key == "keep-alive" || key == "proxy-authenticate"
@@ -104,7 +138,7 @@ static bool safe_request_header(std::string_view name) {
     if (hop_by_hop(name)) return false;
     const auto key = lower(name);
     return key == "accept" || key == "user-agent" || key == "x-request-id"
-        || key == "idempotency-key" || key == "x-api-key";
+        || key == "idempotency-key";
 }
 
 static bool safe_response_header(std::string_view name,
@@ -214,6 +248,13 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
                                   const ForwardRequest& request,
                                   ProtocolMode protocol_mode) {
     ForwardResult result;
+
+    if (!validate_target_auth_headers(target.auth_headers)) {
+        result.status_code = 502;
+        result.error = "invalid upstream auth header contract";
+        result.body = R"({"error":{"type":"provider_protocol_error","message":"Provider authentication contract is invalid"}})";
+        return result;
+    }
 
     std::string url = target.base_url;
     if (!target.upstream_path.empty()) {

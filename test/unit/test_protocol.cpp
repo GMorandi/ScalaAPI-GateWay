@@ -68,6 +68,30 @@ TEST(ProviderResponseEvidence, OnlyExplicitProviderErrorsProveNoCharge) {
     EXPECT_FALSE(gateway::forwarder::is_explicit_provider_rejection(transport_failure));
 }
 
+TEST(ProviderAuthHeaders, TargetSetIsBoundedAndNative) {
+    EXPECT_TRUE(gateway::forwarder::validate_target_auth_headers({
+        {"x-api-key", "provider-secret"},
+        {"anthropic-version", "2023-06-01"},
+        {"anthropic-beta", "prompt-caching-2024-07-31"},
+    }));
+    EXPECT_TRUE(gateway::forwarder::validate_target_auth_headers({
+        {"x-goog-api-key", "provider-secret"},
+    }));
+    EXPECT_FALSE(gateway::forwarder::validate_target_auth_headers({
+        {"api_key", "semantic-secret"},
+    }));
+    EXPECT_FALSE(gateway::forwarder::validate_target_auth_headers({
+        {"Authorization", "Bearer one"},
+        {"authorization", "Bearer two"},
+    }));
+    EXPECT_FALSE(gateway::forwarder::validate_target_auth_headers({
+        {"Host", "attacker.example"},
+    }));
+    EXPECT_FALSE(gateway::forwarder::validate_target_auth_headers({
+        {"x-goog-api-key", "secret\r\nHost: attacker.example"},
+    }));
+}
+
 TEST(OpenAIParse, BasicRequest) {
     std::string body = R"({
         "model": "gpt-4",
