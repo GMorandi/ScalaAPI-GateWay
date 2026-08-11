@@ -980,7 +980,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         }
 
         // Check if we need failover
-        if (forward_result.status_code >= 400 && !malformed_provider_usage) {
+        if (forward_result.status_code >= 400 && !malformed_provider_usage
+            && !terminal_abort) {
             const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - start).count();
             const auto explicit_provider_rejection =

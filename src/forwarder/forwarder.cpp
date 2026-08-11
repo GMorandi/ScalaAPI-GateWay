@@ -281,6 +281,10 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
     if (verb == photon::net::http::Verb::UNKNOWN) verb = photon::net::http::Verb::POST;
     auto* op = http_client->new_operation(verb, url);
 
+    // Product retries allocate and journal a distinct lease attempt. Photon
+    // transport retries are opaque to that state machine and can replay a
+    // Provider request after the client has already disconnected.
+    op->retry = 0;
     op->timeout = {(request.stream ? impl_->config.first_token_timeout_ms
                                    : impl_->config.request_timeout_ms) * 1000ULL};
 
