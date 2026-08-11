@@ -480,7 +480,16 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
                         request.stream_source, request.stream_target);
 
         auto upstream_read = [&](char* buf, size_t len) -> ssize_t {
-            return op->resp.read(buf, len);
+            if (client_cancelled.load(std::memory_order_acquire)) {
+                errno = ECONNABORTED;
+                return -1;
+            }
+            const auto count = op->resp.read(buf, len);
+            if (client_cancelled.load(std::memory_order_acquire)) {
+                errno = ECONNABORTED;
+                return -1;
+            }
+            return count;
         };
 
         std::string accumulated;
