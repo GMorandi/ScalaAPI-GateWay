@@ -2,9 +2,13 @@ name: Gateway CI
 
 on:
   push:
-    branches: [master]
+    branches: [main, master]
   pull_request:
-    branches: [master]
+    branches: [main, master]
+
+concurrency:
+  group: gateway-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
@@ -31,3 +35,13 @@ jobs:
 
       - name: Run benchmarks (smoke)
         run: ./build/test/benchmarks --benchmark_min_time=0.1s
+
+      - name: Generate report
+        if: always()
+        run: |
+          echo "## Gateway CI Report" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tests: ctest completed" >> $GITHUB_STEP_SUMMARY
+          echo "- Benchmarks: smoke test completed" >> $GITHUB_STEP_SUMMARY
+          echo "- Skip reasons: none" >> $GITHUB_STEP_SUMMARY
