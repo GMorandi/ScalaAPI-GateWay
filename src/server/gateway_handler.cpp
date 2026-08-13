@@ -691,6 +691,46 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             return 0;
         }
     }
+    if (spec.capability == Capability::Search && is_json_request(req)) {
+        rapidjson::Document search_doc;
+        search_doc.Parse(req.body.data(), req.body.size());
+        if (search_doc.HasParseError() || !search_doc.IsObject()) {
+            resp.status_code = 400;
+            resp.body = R"({"error":{"type":"invalid_request_error","message":"A JSON object with a query is required"}})";
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+        if (!search_doc.HasMember("query") || !search_doc["query"].IsString()) {
+            resp.status_code = 400;
+            resp.body = R"({"error":{"type":"invalid_request_error","message":"query is required and must be a string"}})";
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+        auto query_str = std::string_view(search_doc["query"].GetString());
+        if (query_str.empty() || query_str.size() > 1000) {
+            resp.status_code = 400;
+            resp.body = R"({"error":{"type":"invalid_request_error","message":"query must be between 1 and 1000 characters"}})";
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+        if (search_doc.HasMember("domain") && !search_doc["domain"].IsString()) {
+            resp.status_code = 400;
+            resp.body = R"({"error":{"type":"invalid_request_error","message":"domain must be a string"}})";
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+        if (search_doc.HasMember("recency") && !search_doc["recency"].IsString()) {
+            resp.status_code = 400;
+            resp.body = R"({"error":{"type":"invalid_request_error","message":"recency must be a string"}})";
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+    }
     bool is_stream = spec.can_stream && (parsed.stream
         || matched.operation == "streamGenerateContent");
     if (spec.realtime) is_stream = false;
