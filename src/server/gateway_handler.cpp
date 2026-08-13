@@ -106,7 +106,9 @@ bool media_control_operation(std::string_view operation) {
         || operation == "images_batch_items" || operation == "images_batch_download"
         || operation == "images_batch_cancel" || operation == "images_batch_delete"
         || operation == "images_batch_delete_outputs" || operation == "images_batch_item_content"
-        || operation == "videos_get" || operation == "videos_content";
+        || operation == "videos_get" || operation == "videos_content"
+        || operation == "videos_cancel" || operation == "videos_delete"
+        || operation == "videos_delete_outputs";
 }
 
 std::string media_operation_id(std::string_view path) {

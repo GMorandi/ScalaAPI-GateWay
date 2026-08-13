@@ -93,15 +93,24 @@ MatchedCapability match_batch_path(std::string_view method, std::string_view rel
 MatchedCapability match_video_path(std::string_view method, std::string_view relative,
                                    std::string_view force_platform) {
     constexpr std::string_view prefix = "/videos/";
-    if (!relative.starts_with(prefix) || method != "GET") return {};
+    if (!relative.starts_with(prefix)) return {};
     auto suffix = relative.substr(prefix.size());
     const auto slash = suffix.find('/');
     const auto request_id = suffix.substr(0, slash);
     if (!safe_segment(request_id)) return {};
-    if (slash == std::string_view::npos) return {&kVideos, "videos_get", force_platform};
-    return suffix.substr(slash) == "/content"
-        ? MatchedCapability{&kVideos, "videos_content", force_platform}
-        : MatchedCapability{};
+    if (slash == std::string_view::npos) {
+        if (method == "GET") return {&kVideos, "videos_get", force_platform};
+        if (method == "DELETE") return {&kVideos, "videos_delete", force_platform};
+        return {};
+    }
+    const auto tail = suffix.substr(slash + 1);
+    if (tail == "content" && method == "GET")
+        return {&kVideos, "videos_content", force_platform};
+    if (tail == "cancel" && method == "POST")
+        return {&kVideos, "videos_cancel", force_platform};
+    if (tail == "outputs" && method == "DELETE")
+        return {&kVideos, "videos_delete_outputs", force_platform};
+    return {};
 }
 
 MatchedCapability route_openai(std::string_view method, std::string_view path,
