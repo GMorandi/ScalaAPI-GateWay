@@ -896,6 +896,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             if (!abort_ack.acknowledged()) {
                 LOG_ERROR("Safe abort after forwarding evidence failure failed for request {} lease {}: {}",
                           request_id, dispatch_result.lease_token, abort_ack.error_code);
+                platform::FaultInjection::crash_if_configured(
+                    "gateway.forward_evidence_abort_failed", request_id);
             }
             forward_result.status_code = 503;
             forward_result.content_type = "application/json";
