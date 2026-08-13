@@ -540,12 +540,14 @@ TEST(Conversion, CrossProtocolResponseRejectsMalformedJson) {
     EXPECT_FALSE(result.error.empty());
 }
 
-TEST(Conversion, CrossProtocolResponseRejectsToolCalls) {
+TEST(Conversion, CrossProtocolResponseConvertsToolCalls) {
     auto result = Converter::convert_response_checked(
-        R"({"model":"gpt","choices":[{"message":{"tool_calls":[{"id":"call_1"}]}}]})",
+        R"({"model":"gpt","choices":[{"message":{"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"NYC\"}"}}]},"finish_reason":"tool_calls"}]})",
         Format::OpenAIChatCompletions, Format::Anthropic, "claude");
-    EXPECT_FALSE(result.success);
-    EXPECT_TRUE(result.body.empty());
+    ASSERT_TRUE(result.success);
+    EXPECT_NE(result.body.find("tool_use"), std::string::npos);
+    EXPECT_NE(result.body.find("get_weather"), std::string::npos);
+    EXPECT_NE(result.body.find("tool_use"), std::string::npos);
 }
 
 TEST(Conversion, UsageIsMappedToGeminiContract) {
@@ -965,4 +967,174 @@ TEST(StreamPipe, EmitsOpenAIResponsesAndGeminiPolicyErrorEvents) {
     EXPECT_TRUE(gemini.first.policy_failed_closed);
     EXPECT_NE(gemini.second.find("data: {\"error\""), std::string::npos);
     EXPECT_NE(gemini.second.find("classifier unavailable"), std::string::npos);
+}
+
+TEST(FinishReason, OpenAIMapsToTargetFormats) {
+    auto to_anthropic = Converter::convert_response(
+        R"({"model":"gpt","choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}})",
+        Format::OpenAIChatCompletions, Format::Anthropic);
+    EXPECT_NE(to_anthropic.find("\"stop_reason\":\"end_turn\""), std::string::npos);
+
+    auto length_to_anthropic = Converter::convert_response(
+        R"({"model":"gpt","choices":[{"message":{"content":"hi"},"finish_reason":"length"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}})",
+        Format::OpenAIChatCompletions, Format::Anthropic);
+    EXPECT_NE(length_to_anthropic.find("\"stop_reason\":\"max_tokens\""), std::string::npos);
+
+    auto to_gemini = Converter::convert_response(
+        R"({"model":"gpt","choices":[{"message":{"content":"hi"},"finish_reason":"length"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}})",
+        Format::OpenAIChatCompletions, Format::Gemini);
+    EXPECT_NE(to_gemini.find("\"finishReason\":\"MAX_TOKENS\""), std::string::npos);
+
+    auto content_filter = Converter::convert_response(
+        R"({"model":"gpt","choices":[{"message":{"content":"hi"},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}})",
+        Format::OpenAIChatCompletions, Format::Gemini);
+    EXPECT_NE(content_filter.find("\"finishReason\":\"SAFETY\""), std::string::npos);
+}
+
+TEST(FinishReason, AnthropicMapsToTargetFormats) {
+    auto to_openai = Converter::convert_response(
+        R"({"model":"claude","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}})",
+        Format::Anthropic, Format::OpenAIChatCompletions);
+    EXPECT_NE(to_openai.find("\"finish_reason\":\"stop\""), std::string::npos);
+
+    auto tool_use_to_openai = Converter::convert_response(
+        R"({"model":"claude","content":[{"type":"tool_use","id":"tu_1","name":"search","input":{"q":"test"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}})",
+        Format::Anthropic, Format::OpenAIChatCompletions);
+    EXPECT_NE(tool_use_to_openai.find("\"finish_reason\":\"tool_calls\""), std::string::npos);
+
+    auto max_tokens_to_gemini = Converter::convert_response(
+        R"({"model":"claude","content":[{"type":"text","text":"hi"}],"stop_reason":"max_tokens","usage":{"input_tokens":1,"output_tokens":1}})",
+        Format::Anthropic, Format::Gemini);
+    EXPECT_NE(max_tokens_to_gemini.find("\"finishReason\":\"MAX_TOKENS\""), std::string::npos);
+}
+
+TEST(FinishReason, GeminiMapsToTargetFormats) {
+    auto stop_to_openai = Converter::convert_response(
+        R"({"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}})",
+        Format::Gemini, Format::OpenAIChatCompletions);
+    EXPECT_NE(stop_to_openai.find("\"finish_reason\":\"stop\""), std::string::npos);
+
+    auto safety_to_openai = Converter::convert_response(
+        R"({"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"SAFETY"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}})",
+        Format::Gemini, Format::OpenAIChatCompletions);
+    EXPECT_NE(safety_to_openai.find("\"finish_reason\":\"content_filter\""), std::string::npos);
+
+    auto recitation_to_anthropic = Converter::convert_response(
+        R"({"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"RECITATION"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}})",
+        Format::Gemini, Format::Anthropic);
+    EXPECT_NE(recitation_to_anthropic.find("\"stop_reason\":\"end_turn\""), std::string::npos);
+}
+
+TEST(FinishReason, ResponsesMapsToTargetFormats) {
+    auto completed_to_openai = Converter::convert_response(
+        R"({"id":"r1","object":"response","status":"completed","model":"gpt-4o","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}})",
+        Format::OpenAIResponses, Format::OpenAIChatCompletions);
+    EXPECT_NE(completed_to_openai.find("\"finish_reason\":\"stop\""), std::string::npos);
+
+    auto incomplete_to_gemini = Converter::convert_response(
+        R"({"id":"r1","object":"response","status":"incomplete","model":"gpt-4o","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}})",
+        Format::OpenAIResponses, Format::Gemini);
+    EXPECT_NE(incomplete_to_gemini.find("\"finishReason\":\"MAX_TOKENS\""), std::string::npos);
+}
+
+TEST(ToolCallResponse, OpenAIToAnthropicConversion) {
+    auto result = Converter::convert_response_checked(
+        R"({"model":"gpt","choices":[{"message":{"content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"NYC\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}})",
+        Format::OpenAIChatCompletions, Format::Anthropic, "claude");
+    ASSERT_TRUE(result.success);
+    EXPECT_NE(result.body.find("\"type\":\"tool_use\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"name\":\"get_weather\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"id\":\"call_1\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"stop_reason\":\"tool_use\""), std::string::npos);
+}
+
+TEST(ToolCallResponse, AnthropicToGeminiConversion) {
+    auto result = Converter::convert_response_checked(
+        R"({"model":"claude","content":[{"type":"tool_use","id":"tu_1","name":"search","input":{"q":"test"}}],"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}})",
+        Format::Anthropic, Format::Gemini, "gemini");
+    ASSERT_TRUE(result.success);
+    EXPECT_NE(result.body.find("\"functionCall\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"name\":\"search\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"finishReason\":\"STOP\""), std::string::npos);
+}
+
+TEST(ToolCallResponse, GeminiToOpenAIConversion) {
+    auto result = Converter::convert_response_checked(
+        R"({"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_time","args":{"tz":"UTC"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}})",
+        Format::Gemini, Format::OpenAIChatCompletions, "gpt-4o");
+    ASSERT_TRUE(result.success);
+    EXPECT_NE(result.body.find("\"tool_calls\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"name\":\"get_time\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"finish_reason\":\"tool_calls\""), std::string::npos);
+}
+
+TEST(ToolCallResponse, GeminiToResponsesConversion) {
+    auto result = Converter::convert_response_checked(
+        R"({"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_time","args":{"tz":"UTC"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}})",
+        Format::Gemini, Format::OpenAIResponses, "gpt-4o");
+    ASSERT_TRUE(result.success);
+    EXPECT_NE(result.body.find("\"type\":\"function_call\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"name\":\"get_time\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"call_id\":\"get_time\""), std::string::npos);
+}
+
+TEST(ToolCallResponse, ResponsesToAnthropicConversion) {
+    auto result = Converter::convert_response_checked(
+        R"({"id":"r1","object":"response","status":"completed","model":"gpt-4o","output":[{"type":"function_call","call_id":"call_1","name":"search","arguments":"{\"q\":\"test\"}"}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}})",
+        Format::OpenAIResponses, Format::Anthropic, "claude");
+    ASSERT_TRUE(result.success);
+    EXPECT_NE(result.body.find("\"type\":\"tool_use\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"name\":\"search\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"stop_reason\":\"tool_use\""), std::string::npos);
+}
+
+TEST(UnknownFieldPolicy, ParsersIgnoreExtraFieldsInRequests) {
+    // OpenAI parser ignores unknown fields
+    auto openai_req = openai::parse_request(
+        R"({"model":"gpt-4","messages":[{"role":"user","content":"Hi"}],"unknown_field":42,"future_option":{"nested":true}})");
+    EXPECT_EQ(openai_req.model, "gpt-4");
+    ASSERT_EQ(openai_req.messages.size(), 1u);
+    EXPECT_EQ(openai_req.messages[0].text_content(), "Hi");
+
+    // Anthropic parser ignores unknown fields
+    auto anthropic_req = anthropic::parse_request(
+        R"({"model":"claude","messages":[{"role":"user","content":"Hi"}],"max_tokens":100,"beta_feature":true})");
+    EXPECT_EQ(anthropic_req.model, "claude");
+    EXPECT_EQ(anthropic_req.max_tokens, 100);
+
+    // Gemini parser ignores unknown fields
+    auto gemini_req = gemini::parse_request(
+        R"({"contents":[{"role":"user","parts":[{"text":"Hi"}]}],"safetySettings":[],"unknown":123})");
+    ASSERT_EQ(gemini_req.messages.size(), 1u);
+
+    // Responses parser ignores unknown fields
+    auto responses_req = openai_responses::parse_request(
+        R"({"model":"gpt-4o","input":"Hi","truncation":"auto","unknown_field":"value"})");
+    EXPECT_EQ(responses_req.model, "gpt-4o");
+}
+
+TEST(UnknownFieldPolicy, ParsersIgnoreExtraFieldsInResponses) {
+    // Response conversion succeeds even with extra unknown fields
+    auto result = Converter::convert_response_checked(
+        R"({"model":"gpt","choices":[{"message":{"content":"hello","refusal_field_should_fail":true},"finish_reason":"stop","unknown_choice_field":true}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"metadata":{"experiment":"xyz"}})",
+        Format::OpenAIChatCompletions, Format::Anthropic, "claude");
+    // Note: refusal_field_should_fail is not "refusal" so it won't trigger rejection
+    ASSERT_TRUE(result.success);
+    EXPECT_NE(result.body.find("hello"), std::string::npos);
+}
+
+TEST(UnknownFieldPolicy, StreamParsersIgnoreExtraFields) {
+    // OpenAI stream parser ignores unknown fields in events
+    std::string data = R"({"model":"gpt-4","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null,"extra":true}],"unknown_top":1})";
+    auto delta = openai::parse_stream_event(data);
+    EXPECT_EQ(delta.type, StreamDelta::Type::TextDelta);
+    EXPECT_EQ(delta.text, "Hello");
+
+    // Gemini stream parser ignores unknown fields
+    std::string gemini_data = R"({"candidates":[{"content":{"role":"model","parts":[{"text":"World"}]},"finishReason":"STOP","extra":true}],"unknown":1})";
+    auto gemini_delta = gemini::parse_stream_event(gemini_data);
+    // Parser finds text content and sets TextDelta; finish_reason is also captured
+    EXPECT_EQ(gemini_delta.type, StreamDelta::Type::TextDelta);
+    EXPECT_EQ(gemini_delta.text, "World");
+    EXPECT_EQ(gemini_delta.finish_reason, "stop");
 }

@@ -1,0 +1,11 @@
+{
+  "id": "resp-toolcall-v1",
+  "object": "response",
+  "status": "completed",
+  "model": "gpt-4o",
+  "output": [
+    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Let me check."}]},
+    {"type": "function_call", "call_id": "call_weather_1", "name": "get_weather", "arguments": "{\"city\":\"Vienna\"}"}
+  ],
+  "usage": {"input_tokens": 15, "output_tokens": 8, "total_tokens": 23}
+}

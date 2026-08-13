@@ -12,6 +12,16 @@ struct ToolCall {
     std::string arguments;
 };
 
+enum class FinishReason {
+    Stop,
+    Length,
+    ToolCalls,
+    ContentFilter,
+    Safety,
+    Recitation,
+    Unknown,
+};
+
 struct ContentBlock {
     enum class Type { Text, Image, ToolUse, ToolResult };
     Type type = Type::Text;

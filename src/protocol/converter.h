@@ -41,6 +41,14 @@ struct MediaUsageMetadata {
     int video_duration_seconds = 0;
 };
 
+// Unknown Field Policy:
+// All request and response parsers silently ignore unrecognized fields.
+// Extra JSON keys in any input document are skipped without error. This
+// ensures forward-compatibility: when a provider adds new fields, the
+// gateway will not crash or produce malformed output. Parsers extract only
+// the fields they need and discard everything else. Tests in
+// test_protocol.cpp verify this behaviour for each format.
+
 class Converter {
 public:
     static ParsedRequest parse(std::string_view body, Format hint);

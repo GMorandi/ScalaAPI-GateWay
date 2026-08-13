@@ -515,6 +515,202 @@ std::string member_string(const rj::Value& value, const char* key) {
         ? std::string(value[key].GetString()) : std::string{};
 }
 
+FinishReason parse_finish_reason(Format from, const rj::Value& root) {
+    if (from == Format::OpenAIChatCompletions) {
+        if (root.HasMember("choices") && root["choices"].IsArray() && !root["choices"].Empty()) {
+            const auto& choice = root["choices"][0];
+            if (choice.IsObject() && choice.HasMember("finish_reason") && choice["finish_reason"].IsString()) {
+                std::string_view reason(choice["finish_reason"].GetString(), choice["finish_reason"].GetStringLength());
+                if (reason == "stop") return FinishReason::Stop;
+                if (reason == "length") return FinishReason::Length;
+                if (reason == "tool_calls") return FinishReason::ToolCalls;
+                if (reason == "content_filter") return FinishReason::ContentFilter;
+            }
+        }
+    } else if (from == Format::Anthropic) {
+        if (root.HasMember("stop_reason") && root["stop_reason"].IsString()) {
+            std::string_view reason(root["stop_reason"].GetString(), root["stop_reason"].GetStringLength());
+            if (reason == "end_turn") return FinishReason::Stop;
+            if (reason == "max_tokens") return FinishReason::Length;
+            if (reason == "tool_use") return FinishReason::ToolCalls;
+        }
+    } else if (from == Format::Gemini) {
+        if (root.HasMember("candidates") && root["candidates"].IsArray() && !root["candidates"].Empty()) {
+            const auto& candidate = root["candidates"][0];
+            if (candidate.IsObject() && candidate.HasMember("finishReason") && candidate["finishReason"].IsString()) {
+                std::string_view reason(candidate["finishReason"].GetString(), candidate["finishReason"].GetStringLength());
+                if (reason == "STOP") {
+                    // Gemini uses STOP for both normal stops and tool calls; detect from content
+                    if (candidate.HasMember("content") && candidate["content"].IsObject()) {
+                        const auto& content = candidate["content"];
+                        if (content.HasMember("parts") && content["parts"].IsArray()) {
+                            for (const auto& part : content["parts"].GetArray()) {
+                                if (part.IsObject() && part.HasMember("functionCall"))
+                                    return FinishReason::ToolCalls;
+                            }
+                        }
+                    }
+                    return FinishReason::Stop;
+                }
+                if (reason == "MAX_TOKENS") return FinishReason::Length;
+                if (reason == "SAFETY") return FinishReason::Safety;
+                if (reason == "RECITATION") return FinishReason::Recitation;
+            }
+        }
+    } else if (from == Format::OpenAIResponses) {
+        if (root.HasMember("status") && root["status"].IsString()) {
+            std::string_view status(root["status"].GetString(), root["status"].GetStringLength());
+            if (status == "completed") {
+                if (root.HasMember("output") && root["output"].IsArray()) {
+                    for (const auto& item : root["output"].GetArray()) {
+                        if (item.IsObject() && item.HasMember("type") && item["type"].IsString()) {
+                            std::string_view type(item["type"].GetString(), item["type"].GetStringLength());
+                            if (type == "function_call") return FinishReason::ToolCalls;
+                        }
+                    }
+                }
+                return FinishReason::Stop;
+            }
+            if (status == "incomplete") return FinishReason::Length;
+            if (status == "failed") return FinishReason::ContentFilter;
+        }
+    }
+    return FinishReason::Unknown;
+}
+
+std::string serialize_finish_reason(FinishReason reason, Format to) {
+    switch (to) {
+    case Format::OpenAIChatCompletions:
+        switch (reason) {
+        case FinishReason::Stop: return "stop";
+        case FinishReason::Length: return "length";
+        case FinishReason::ToolCalls: return "tool_calls";
+        case FinishReason::ContentFilter: return "content_filter";
+        case FinishReason::Safety: return "content_filter";
+        case FinishReason::Recitation: return "content_filter";
+        case FinishReason::Unknown: return "stop";
+        }
+        break;
+    case Format::Anthropic:
+        switch (reason) {
+        case FinishReason::Stop: return "end_turn";
+        case FinishReason::Length: return "max_tokens";
+        case FinishReason::ToolCalls: return "tool_use";
+        case FinishReason::ContentFilter: return "end_turn";
+        case FinishReason::Safety: return "end_turn";
+        case FinishReason::Recitation: return "end_turn";
+        case FinishReason::Unknown: return "end_turn";
+        }
+        break;
+    case Format::Gemini:
+        switch (reason) {
+        case FinishReason::Stop: return "STOP";
+        case FinishReason::Length: return "MAX_TOKENS";
+        case FinishReason::ToolCalls: return "STOP";
+        case FinishReason::ContentFilter: return "SAFETY";
+        case FinishReason::Safety: return "SAFETY";
+        case FinishReason::Recitation: return "RECITATION";
+        case FinishReason::Unknown: return "STOP";
+        }
+        break;
+    case Format::OpenAIResponses:
+        switch (reason) {
+        case FinishReason::Stop: return "completed";
+        case FinishReason::Length: return "incomplete";
+        case FinishReason::ToolCalls: return "completed";
+        case FinishReason::ContentFilter: return "failed";
+        case FinishReason::Safety: return "failed";
+        case FinishReason::Recitation: return "failed";
+        case FinishReason::Unknown: return "completed";
+        }
+        break;
+    }
+    return "stop";
+}
+
+struct ExtractedToolCall {
+    std::string id;
+    std::string name;
+    std::string arguments;
+};
+
+std::vector<ExtractedToolCall> extract_tool_calls(Format from, const rj::Value& root) {
+    std::vector<ExtractedToolCall> calls;
+    if (from == Format::OpenAIChatCompletions) {
+        if (root.HasMember("choices") && root["choices"].IsArray() && !root["choices"].Empty()) {
+            const auto& choice = root["choices"][0];
+            if (choice.IsObject() && choice.HasMember("message") && choice["message"].IsObject()) {
+                const auto& message = choice["message"];
+                if (message.HasMember("tool_calls") && message["tool_calls"].IsArray()) {
+                    for (const auto& tc : message["tool_calls"].GetArray()) {
+                        if (!tc.IsObject()) continue;
+                        ExtractedToolCall call;
+                        call.id = member_string(tc, "id");
+                        if (tc.HasMember("function") && tc["function"].IsObject()) {
+                            call.name = member_string(tc["function"], "name");
+                            call.arguments = member_string(tc["function"], "arguments");
+                        }
+                        calls.push_back(std::move(call));
+                    }
+                }
+            }
+        }
+    } else if (from == Format::Anthropic) {
+        if (root.HasMember("content") && root["content"].IsArray()) {
+            for (const auto& block : root["content"].GetArray()) {
+                if (!block.IsObject() || !block.HasMember("type") || !block["type"].IsString()) continue;
+                std::string_view type(block["type"].GetString(), block["type"].GetStringLength());
+                if (type != "tool_use") continue;
+                ExtractedToolCall call;
+                call.id = member_string(block, "id");
+                call.name = member_string(block, "name");
+                if (block.HasMember("input") && block["input"].IsObject()) {
+                    rj::StringBuffer sb;
+                    rj::Writer<rj::StringBuffer> w(sb);
+                    block["input"].Accept(w);
+                    call.arguments = sb.GetString();
+                }
+                calls.push_back(std::move(call));
+            }
+        }
+    } else if (from == Format::Gemini) {
+        if (root.HasMember("candidates") && root["candidates"].IsArray() && !root["candidates"].Empty()) {
+            const auto& candidate = root["candidates"][0];
+            if (!candidate.IsObject() || !candidate.HasMember("content") || !candidate["content"].IsObject()) return calls;
+            const auto& content = candidate["content"];
+            if (!content.HasMember("parts") || !content["parts"].IsArray()) return calls;
+            for (const auto& part : content["parts"].GetArray()) {
+                if (!part.IsObject() || !part.HasMember("functionCall") || !part["functionCall"].IsObject()) continue;
+                const auto& fc = part["functionCall"];
+                ExtractedToolCall call;
+                call.name = member_string(fc, "name");
+                call.id = call.name;
+                if (fc.HasMember("args") && fc["args"].IsObject()) {
+                    rj::StringBuffer sb;
+                    rj::Writer<rj::StringBuffer> w(sb);
+                    fc["args"].Accept(w);
+                    call.arguments = sb.GetString();
+                }
+                calls.push_back(std::move(call));
+            }
+        }
+    } else if (from == Format::OpenAIResponses) {
+        if (root.HasMember("output") && root["output"].IsArray()) {
+            for (const auto& item : root["output"].GetArray()) {
+                if (!item.IsObject() || !item.HasMember("type") || !item["type"].IsString()) continue;
+                std::string_view type(item["type"].GetString(), item["type"].GetStringLength());
+                if (type != "function_call") continue;
+                ExtractedToolCall call;
+                call.id = member_string(item, "call_id");
+                call.name = member_string(item, "name");
+                call.arguments = member_string(item, "arguments");
+                calls.push_back(std::move(call));
+            }
+        }
+    }
+    return calls;
+}
+
 std::string response_text(const rj::Value& root) {
     if (!root.IsObject()) return {};
     if (root.HasMember("choices") && root["choices"].IsArray() && !root["choices"].Empty()) {
@@ -565,26 +761,31 @@ bool has_unsupported_response_shape(const rj::Value& root, Format from) {
         if (!choice.IsObject() || !choice.HasMember("message") || !choice["message"].IsObject())
             return false;
         const auto& message = choice["message"];
-        return message.HasMember("tool_calls") || message.HasMember("function_call")
-            || message.HasMember("refusal")
+        // Tool calls are now supported; only reject refusals and non-string content
+        return message.HasMember("refusal")
             || (message.HasMember("content") && !message["content"].IsString()
                 && !message["content"].IsNull());
     }
     if (from == Format::Anthropic && root.HasMember("content") && root["content"].IsArray()) {
         for (const auto& block : root["content"].GetArray()) {
-            if (!block.IsObject() || !block.HasMember("type") || !block["type"].IsString()
-                || std::string_view(block["type"].GetString()) != "text") return true;
+            if (!block.IsObject() || !block.HasMember("type") || !block["type"].IsString()) return true;
+            std::string_view type(block["type"].GetString(), block["type"].GetStringLength());
+            // Allow text and tool_use blocks; reject everything else
+            if (type != "text" && type != "tool_use") return true;
         }
     }
     if (from == Format::OpenAIResponses && root.HasMember("output")
         && root["output"].IsArray()) {
         for (const auto& item : root["output"].GetArray()) {
-            if (!item.IsObject() || !item.HasMember("type") || !item["type"].IsString()
-                || std::string_view(item["type"].GetString()) != "message") return true;
-            if (item.HasMember("content") && item["content"].IsArray()) {
+            if (!item.IsObject() || !item.HasMember("type") || !item["type"].IsString()) return true;
+            std::string_view type(item["type"].GetString(), item["type"].GetStringLength());
+            // Allow message and function_call items
+            if (type != "message" && type != "function_call") return true;
+            if (type == "message" && item.HasMember("content") && item["content"].IsArray()) {
                 for (const auto& block : item["content"].GetArray()) {
-                    if (!block.IsObject() || !block.HasMember("type") || !block["type"].IsString()
-                        || std::string_view(block["type"].GetString()) != "output_text") return true;
+                    if (!block.IsObject() || !block.HasMember("type") || !block["type"].IsString()) return true;
+                    std::string_view btype(block["type"].GetString(), block["type"].GetStringLength());
+                    if (btype != "output_text") return true;
                 }
             }
         }
@@ -597,7 +798,9 @@ bool has_unsupported_response_shape(const rj::Value& root, Format from) {
             const auto& content = candidate["content"];
             if (!content.HasMember("parts") || !content["parts"].IsArray()) continue;
             for (const auto& part : content["parts"].GetArray()) {
-                if (!part.IsObject() || !part.HasMember("text") || !part["text"].IsString())
+                if (!part.IsObject()) return true;
+                // Allow text and functionCall parts
+                if (!part.HasMember("text") && !part.HasMember("functionCall"))
                     return true;
             }
         }
@@ -823,6 +1026,10 @@ ResponseConversionResult Converter::convert_response_checked(
         return {false, {}, "Upstream response contains unsupported tool or multimodal content"};
     const auto text = response_text(source);
     const auto model = response_model(source, requested_model);
+    const auto finish = parse_finish_reason(from, source);
+    const auto tool_calls = extract_tool_calls(from, source);
+    const auto effective_finish = tool_calls.empty() ? finish : FinishReason::ToolCalls;
+    const auto finish_str = serialize_finish_reason(effective_finish, to);
 
     rj::Document output;
     output.SetObject();
@@ -833,10 +1040,28 @@ ResponseConversionResult Converter::convert_response_checked(
         output.AddMember("model", rj::Value(model.c_str(), alloc), alloc);
         rj::Value choices(rj::kArrayType), choice(rj::kObjectType), message(rj::kObjectType);
         message.AddMember("role", rj::Value("assistant", alloc), alloc);
-        message.AddMember("content", rj::Value(text.c_str(), alloc), alloc);
+        if (text.empty() && !tool_calls.empty()) {
+            message.AddMember("content", rj::Value().SetNull(), alloc);
+        } else {
+            message.AddMember("content", rj::Value(text.c_str(), alloc), alloc);
+        }
+        if (!tool_calls.empty()) {
+            rj::Value tcs(rj::kArrayType);
+            for (const auto& tc : tool_calls) {
+                rj::Value tc_obj(rj::kObjectType);
+                tc_obj.AddMember("id", rj::Value(tc.id.c_str(), alloc), alloc);
+                tc_obj.AddMember("type", "function", alloc);
+                rj::Value fn(rj::kObjectType);
+                fn.AddMember("name", rj::Value(tc.name.c_str(), alloc), alloc);
+                fn.AddMember("arguments", rj::Value(tc.arguments.c_str(), alloc), alloc);
+                tc_obj.AddMember("function", fn, alloc);
+                tcs.PushBack(tc_obj, alloc);
+            }
+            message.AddMember("tool_calls", tcs, alloc);
+        }
         choice.AddMember("index", 0, alloc);
         choice.AddMember("message", message, alloc);
-        choice.AddMember("finish_reason", rj::Value("stop", alloc), alloc);
+        choice.AddMember("finish_reason", rj::Value(finish_str.c_str(), alloc), alloc);
         choices.PushBack(choice, alloc);
         output.AddMember("choices", choices, alloc);
     } else if (to == Format::Anthropic) {
@@ -844,35 +1069,85 @@ ResponseConversionResult Converter::convert_response_checked(
         output.AddMember("type", rj::Value("message", alloc), alloc);
         output.AddMember("role", rj::Value("assistant", alloc), alloc);
         output.AddMember("model", rj::Value(model.c_str(), alloc), alloc);
-        rj::Value content(rj::kArrayType), block(rj::kObjectType);
-        block.AddMember("type", rj::Value("text", alloc), alloc);
-        block.AddMember("text", rj::Value(text.c_str(), alloc), alloc);
-        content.PushBack(block, alloc);
+        rj::Value content(rj::kArrayType);
+        if (!text.empty()) {
+            rj::Value block(rj::kObjectType);
+            block.AddMember("type", rj::Value("text", alloc), alloc);
+            block.AddMember("text", rj::Value(text.c_str(), alloc), alloc);
+            content.PushBack(block, alloc);
+        }
+        for (const auto& tc : tool_calls) {
+            rj::Value block(rj::kObjectType);
+            block.AddMember("type", rj::Value("tool_use", alloc), alloc);
+            block.AddMember("id", rj::Value(tc.id.c_str(), alloc), alloc);
+            block.AddMember("name", rj::Value(tc.name.c_str(), alloc), alloc);
+            rj::Document input_doc;
+            if (!tc.arguments.empty()) input_doc.Parse(tc.arguments.c_str());
+            if (input_doc.HasParseError() || !input_doc.IsObject()) input_doc.SetObject();
+            block.AddMember("input", rj::Value(input_doc, alloc), alloc);
+            content.PushBack(block, alloc);
+        }
+        if (content.Empty()) {
+            rj::Value block(rj::kObjectType);
+            block.AddMember("type", rj::Value("text", alloc), alloc);
+            block.AddMember("text", rj::Value(text.c_str(), alloc), alloc);
+            content.PushBack(block, alloc);
+        }
         output.AddMember("content", content, alloc);
-        output.AddMember("stop_reason", rj::Value("end_turn", alloc), alloc);
+        output.AddMember("stop_reason", rj::Value(finish_str.c_str(), alloc), alloc);
     } else if (to == Format::OpenAIResponses) {
         output.AddMember("id", rj::Value("resp_gateway", alloc), alloc);
         output.AddMember("object", rj::Value("response", alloc), alloc);
-        output.AddMember("status", rj::Value("completed", alloc), alloc);
+        output.AddMember("status", rj::Value(finish_str.c_str(), alloc), alloc);
         output.AddMember("model", rj::Value(model.c_str(), alloc), alloc);
         output.AddMember("output_text", rj::Value(text.c_str(), alloc), alloc);
-        rj::Value output_items(rj::kArrayType), item(rj::kObjectType), content(rj::kArrayType), block(rj::kObjectType);
-        item.AddMember("type", rj::Value("message", alloc), alloc);
-        item.AddMember("role", rj::Value("assistant", alloc), alloc);
-        block.AddMember("type", rj::Value("output_text", alloc), alloc);
-        block.AddMember("text", rj::Value(text.c_str(), alloc), alloc);
-        content.PushBack(block, alloc);
-        item.AddMember("content", content, alloc);
-        output_items.PushBack(item, alloc);
+        rj::Value output_items(rj::kArrayType);
+        if (!text.empty() || tool_calls.empty()) {
+            rj::Value item(rj::kObjectType), content_arr(rj::kArrayType), block(rj::kObjectType);
+            item.AddMember("type", rj::Value("message", alloc), alloc);
+            item.AddMember("role", rj::Value("assistant", alloc), alloc);
+            block.AddMember("type", rj::Value("output_text", alloc), alloc);
+            block.AddMember("text", rj::Value(text.c_str(), alloc), alloc);
+            content_arr.PushBack(block, alloc);
+            item.AddMember("content", content_arr, alloc);
+            output_items.PushBack(item, alloc);
+        }
+        for (const auto& tc : tool_calls) {
+            rj::Value item(rj::kObjectType);
+            item.AddMember("type", rj::Value("function_call", alloc), alloc);
+            item.AddMember("call_id", rj::Value(tc.id.c_str(), alloc), alloc);
+            item.AddMember("name", rj::Value(tc.name.c_str(), alloc), alloc);
+            item.AddMember("arguments", rj::Value(tc.arguments.c_str(), alloc), alloc);
+            output_items.PushBack(item, alloc);
+        }
         output.AddMember("output", output_items, alloc);
     } else if (to == Format::Gemini) {
-        rj::Value candidates(rj::kArrayType), candidate(rj::kObjectType), content(rj::kObjectType), parts(rj::kArrayType), part(rj::kObjectType);
-        part.AddMember("text", rj::Value(text.c_str(), alloc), alloc);
-        parts.PushBack(part, alloc);
+        rj::Value candidates(rj::kArrayType), candidate(rj::kObjectType), content(rj::kObjectType), parts(rj::kArrayType);
+        if (!text.empty()) {
+            rj::Value part(rj::kObjectType);
+            part.AddMember("text", rj::Value(text.c_str(), alloc), alloc);
+            parts.PushBack(part, alloc);
+        }
+        for (const auto& tc : tool_calls) {
+            rj::Value part(rj::kObjectType);
+            rj::Value fc(rj::kObjectType);
+            fc.AddMember("name", rj::Value(tc.name.c_str(), alloc), alloc);
+            rj::Document args;
+            if (!tc.arguments.empty()) args.Parse(tc.arguments.c_str());
+            if (args.HasParseError() || !args.IsObject()) args.SetObject();
+            fc.AddMember("args", rj::Value(args, alloc), alloc);
+            part.AddMember("functionCall", fc, alloc);
+            parts.PushBack(part, alloc);
+        }
+        if (parts.Empty()) {
+            rj::Value part(rj::kObjectType);
+            part.AddMember("text", rj::Value(text.c_str(), alloc), alloc);
+            parts.PushBack(part, alloc);
+        }
         content.AddMember("role", rj::Value("model", alloc), alloc);
         content.AddMember("parts", parts, alloc);
         candidate.AddMember("content", content, alloc);
-        candidate.AddMember("finishReason", rj::Value("STOP", alloc), alloc);
+        candidate.AddMember("finishReason", rj::Value(finish_str.c_str(), alloc), alloc);
         candidates.PushBack(candidate, alloc);
         output.AddMember("candidates", candidates, alloc);
     } else {

@@ -418,3 +418,50 @@ TEST(ProtocolGolden, CrossProtocolStreamFixtureConversionPreservesMeaning) {
     EXPECT_NE(response_to_openai.find("response.output_text.delta"), std::string::npos);
 
 }
+
+TEST(ProtocolGolden, ToolCallResponseGoldensConvertAcrossProviders) {
+    using namespace gateway::protocol;
+
+    struct ToolCallGolden {
+        Format format;
+        const char* fixture;
+    };
+    constexpr std::array tool_call_responses{
+        ToolCallGolden{Format::OpenAIChatCompletions, "openai_chat_toolcall_response_v1.json"},
+        ToolCallGolden{Format::Anthropic, "anthropic_messages_toolcall_response_v1.json"},
+        ToolCallGolden{Format::Gemini, "gemini_generate_toolcall_response_v1.json"},
+        ToolCallGolden{Format::OpenAIResponses, "openai_responses_toolcall_response_v1.json"},
+    };
+    constexpr std::array targets{
+        Format::OpenAIChatCompletions,
+        Format::OpenAIResponses,
+        Format::Anthropic,
+        Format::Gemini,
+    };
+
+    for (const auto& source : tool_call_responses) {
+        for (const auto target : targets) {
+            if (source.format == target) continue;  // passthrough is trivially correct
+            const auto converted = Converter::convert_response_checked(
+                read_fixture(source.fixture), source.format, target, "gpt-4o");
+            SCOPED_TRACE(std::string("source=") + std::to_string(
+                static_cast<int>(source.format)) + ", target="
+                + std::to_string(static_cast<int>(target)));
+            ASSERT_TRUE(converted.success);
+            // Every target should contain the tool name
+            EXPECT_NE(converted.body.find("get_weather"), std::string::npos);
+            // Every target should have tool call indicators
+            if (target == Format::OpenAIChatCompletions) {
+                EXPECT_NE(converted.body.find("\"tool_calls\""), std::string::npos);
+                EXPECT_NE(converted.body.find("\"finish_reason\":\"tool_calls\""), std::string::npos);
+            } else if (target == Format::Anthropic) {
+                EXPECT_NE(converted.body.find("\"tool_use\""), std::string::npos);
+                EXPECT_NE(converted.body.find("\"stop_reason\":\"tool_use\""), std::string::npos);
+            } else if (target == Format::Gemini) {
+                EXPECT_NE(converted.body.find("\"functionCall\""), std::string::npos);
+            } else if (target == Format::OpenAIResponses) {
+                EXPECT_NE(converted.body.find("\"function_call\""), std::string::npos);
+            }
+        }
+    }
+}

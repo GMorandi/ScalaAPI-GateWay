@@ -254,7 +254,13 @@ std::string serialize_stream_event(const StreamDelta& delta) {
         rj::Value part(rj::kObjectType);
         part.AddMember("text", "", alloc);
         parts.PushBack(part, alloc);
-        std::string reason = (delta.finish_reason == "tool_calls") ? "STOP" : "STOP";
+        std::string reason = "STOP";
+        if (delta.finish_reason == "length" || delta.finish_reason == "max_tokens")
+            reason = "MAX_TOKENS";
+        else if (delta.finish_reason == "content_filter")
+            reason = "SAFETY";
+        else if (delta.finish_reason == "recitation")
+            reason = "RECITATION";
         candidate.AddMember("finishReason", rj::Value(reason.c_str(), alloc), alloc);
         break;
     }
@@ -295,7 +301,11 @@ StreamDelta parse_stream_event(std::string_view data) {
 
     auto& cand = doc["candidates"][0];
     if (cand.HasMember("finishReason") && cand["finishReason"].IsString()) {
-        delta.finish_reason = "stop";
+        auto reason = get_str(cand, "finishReason");
+        if (reason == "MAX_TOKENS") delta.finish_reason = "length";
+        else if (reason == "SAFETY") delta.finish_reason = "content_filter";
+        else if (reason == "RECITATION") delta.finish_reason = "recitation";
+        else delta.finish_reason = "stop";
         delta.type = StreamDelta::Type::MessageEnd;
     }
 
