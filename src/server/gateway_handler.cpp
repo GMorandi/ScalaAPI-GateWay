@@ -976,9 +976,19 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         // an ambiguous partial stream.
         if ((forward_result.client_disconnect && !forward_result.output_started)
             || forward_result.stream_incomplete) {
+            // Use a distinct abort reason when the incomplete stream was caused
+            // by a mid-stream content policy boundary so the Platform lease
+            // settlement can differentiate policy enforcement from transport
+            // failures.  The disposition stays Unknown because earlier events
+            // were already delivered to the client.
+            const auto stream_abort_reason =
+                forward_result.policy_blocked ? "response_content_policy_blocked"
+                : forward_result.policy_failed_closed ? "response_content_policy_fail_closed"
+                : forward_result.client_disconnect ? "client_disconnect"
+                : "incomplete_provider_stream";
             auto abort_ack = dispatch_.abort(
                 dispatch_result.lease_token,
-                forward_result.client_disconnect ? "client_disconnect" : "incomplete_provider_stream",
+                stream_abort_reason,
                 dispatch::LeaseAbortDisposition::Unknown,
                 forward_result.provider_status_code);
             if (!abort_ack.acknowledged()) {

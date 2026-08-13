@@ -969,6 +969,169 @@ TEST(StreamPipe, EmitsOpenAIResponsesAndGeminiPolicyErrorEvents) {
     EXPECT_NE(gemini.second.find("classifier unavailable"), std::string::npos);
 }
 
+TEST(StreamPipe, MidStreamPolicyBoundaryPreservesPriorEventsAndEmitsError) {
+    // Verify the full mid-stream policy boundary contract:
+    //  - Events that passed policy before the block remain in client output.
+    //  - The blocked event itself is withheld from client output.
+    //  - A policy error event is emitted in its place.
+    //  - The stream result reports policy_blocked=true and incomplete=true.
+    gateway::forwarder::StreamPipeConfig config;
+    config.policy = [&](std::string_view content) {
+        return content.find("FORBIDDEN") != std::string_view::npos
+            ? gateway::forwarder::StreamPolicyDecision::Blocked(
+                "content_policy_blocked", "Provider response was withheld by the active content policy")
+            : gateway::forwarder::StreamPolicyDecision::Allowed();
+    };
+    const std::vector<std::string> chunks = {
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"FORBIDDEN\"}}]}\n\n",
+        "data: [DONE]\n\n"
+    };
+    size_t index = 0;
+    std::string emitted;
+    gateway::forwarder::StreamPipe pipe(
+        config, gateway::forwarder::ProtocolMode::Passthrough,
+        Format::OpenAIChatCompletions, Format::OpenAIChatCompletions);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (index == chunks.size()) return 0;
+            const auto& chunk = chunks[index++];
+            if (chunk.size() > capacity) return -1;
+            std::memcpy(out, chunk.data(), chunk.size());
+            return static_cast<ssize_t>(chunk.size());
+        },
+        [&](const char* data, size_t size) -> ssize_t {
+            emitted.append(data, size);
+            return static_cast<ssize_t>(size);
+        });
+
+    EXPECT_TRUE(result.policy_blocked);
+    EXPECT_FALSE(result.policy_failed_closed);
+    EXPECT_TRUE(result.incomplete);
+    EXPECT_EQ(result.policy_error_code, "content_policy_blocked");
+    // Previously-passed events are in output
+    EXPECT_NE(emitted.find("hello"), std::string::npos);
+    EXPECT_NE(emitted.find("world"), std::string::npos);
+    // Blocked event is NOT in output
+    EXPECT_EQ(emitted.find("FORBIDDEN"), std::string::npos);
+    // Policy error event IS in output
+    EXPECT_NE(emitted.find("content_policy_blocked"), std::string::npos);
+}
+
+TEST(StreamPipe, MidStreamFailClosedPreservesPriorEventsAndEmitsError) {
+    // A fail-closed boundary mid-stream must also preserve prior events and
+    // emit a fail-closed error event.
+    gateway::forwarder::StreamPipeConfig config;
+    int call_count = 0;
+    config.policy = [&](std::string_view) {
+        ++call_count;
+        // Allow the first event, fail-closed on the second.
+        return call_count <= 1
+            ? gateway::forwarder::StreamPolicyDecision::Allowed()
+            : gateway::forwarder::StreamPolicyDecision::FailedClosed(
+                "content_policy_unavailable", "classifier unavailable");
+    };
+    const std::vector<std::string> chunks = {
+        "data: {\"choices\":[{\"delta\":{\"content\":\"safe\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"next\"}}]}\n\n",
+        "data: [DONE]\n\n"
+    };
+    size_t index = 0;
+    std::string emitted;
+    gateway::forwarder::StreamPipe pipe(
+        config, gateway::forwarder::ProtocolMode::Passthrough,
+        Format::OpenAIChatCompletions, Format::OpenAIChatCompletions);
+    auto result = pipe.run(
+        [&](char* out, size_t capacity) -> ssize_t {
+            if (index == chunks.size()) return 0;
+            const auto& chunk = chunks[index++];
+            if (chunk.size() > capacity) return -1;
+            std::memcpy(out, chunk.data(), chunk.size());
+            return static_cast<ssize_t>(chunk.size());
+        },
+        [&](const char* data, size_t size) -> ssize_t {
+            emitted.append(data, size);
+            return static_cast<ssize_t>(size);
+        });
+
+    EXPECT_TRUE(result.policy_failed_closed);
+    EXPECT_FALSE(result.policy_blocked);
+    EXPECT_TRUE(result.incomplete);
+    EXPECT_EQ(result.policy_error_code, "content_policy_unavailable");
+    EXPECT_NE(emitted.find("safe"), std::string::npos);
+    EXPECT_EQ(emitted.find("next"), std::string::npos);
+    EXPECT_NE(emitted.find("content_policy_unavailable"), std::string::npos);
+}
+
+TEST(StreamPipe, OversizedEventFailsClosedAtExactByteBoundary) {
+    // An event at exactly max_policy_event_bytes is passed to the policy
+    // callback.  An event one byte over fails closed with
+    // "content_policy_payload_too_large" without invoking the policy callback.
+    const std::string small_event = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n";
+    const size_t limit = small_event.size();
+
+    // At-limit event: policy callback IS invoked, event passes through.
+    {
+        gateway::forwarder::StreamPipeConfig config;
+        config.max_policy_event_bytes = limit;
+        int policy_calls = 0;
+        config.policy = [&](std::string_view) {
+            ++policy_calls;
+            return gateway::forwarder::StreamPolicyDecision::Allowed();
+        };
+        bool read_once = false;
+        gateway::forwarder::StreamPipe pipe(
+            config, gateway::forwarder::ProtocolMode::Passthrough,
+            Format::OpenAIChatCompletions, Format::OpenAIChatCompletions);
+        auto result = pipe.run(
+            [&](char* out, size_t capacity) -> ssize_t {
+                if (read_once) return 0;
+                read_once = true;
+                if (small_event.size() > capacity) return -1;
+                std::memcpy(out, small_event.data(), small_event.size());
+                return static_cast<ssize_t>(small_event.size());
+            },
+            [](const char*, size_t size) -> ssize_t { return static_cast<ssize_t>(size); });
+        EXPECT_EQ(policy_calls, 1);
+        EXPECT_FALSE(result.policy_blocked);
+        EXPECT_FALSE(result.policy_failed_closed);
+    }
+
+    // Over-limit event: policy callback is NOT invoked, fails closed.
+    {
+        gateway::forwarder::StreamPipeConfig config;
+        config.max_policy_event_bytes = limit - 1;
+        int policy_calls = 0;
+        config.policy = [&](std::string_view) {
+            ++policy_calls;
+            return gateway::forwarder::StreamPolicyDecision::Allowed();
+        };
+        bool read_once = false;
+        std::string emitted;
+        gateway::forwarder::StreamPipe pipe(
+            config, gateway::forwarder::ProtocolMode::Passthrough,
+            Format::OpenAIChatCompletions, Format::OpenAIChatCompletions);
+        auto result = pipe.run(
+            [&](char* out, size_t capacity) -> ssize_t {
+                if (read_once) return 0;
+                read_once = true;
+                if (small_event.size() > capacity) return -1;
+                std::memcpy(out, small_event.data(), small_event.size());
+                return static_cast<ssize_t>(small_event.size());
+            },
+            [&](const char* data, size_t size) -> ssize_t {
+                emitted.append(data, size);
+                return static_cast<ssize_t>(size);
+            });
+        EXPECT_EQ(policy_calls, 0);
+        EXPECT_TRUE(result.policy_failed_closed);
+        EXPECT_FALSE(result.policy_blocked);
+        EXPECT_EQ(result.policy_error_code, "content_policy_payload_too_large");
+        EXPECT_NE(emitted.find("content_policy_payload_too_large"), std::string::npos);
+    }
+}
+
 TEST(FinishReason, OpenAIMapsToTargetFormats) {
     auto to_anthropic = Converter::convert_response(
         R"({"model":"gpt","choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}})",
