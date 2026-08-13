@@ -72,6 +72,8 @@ struct UpstreamTarget {
     std::vector<std::pair<std::string, std::string>> auth_headers;
     std::string mapped_model;
     std::string proxy_url;
+    std::string proxy_username;
+    std::string proxy_password;
     int64_t user_id = 0;
     int64_t group_id = 0;
     double rate_multiplier = 1.0;

@@ -276,6 +276,8 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
 
         if (up.hasProxy()) {
             result.upstream.proxy_url = up.getProxy().getUrl();
+            result.upstream.proxy_username = up.getProxy().getUsername();
+            result.upstream.proxy_password = up.getProxy().getPassword();
         }
 
         if (up.hasBilling()) {

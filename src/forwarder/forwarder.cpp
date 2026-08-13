@@ -23,6 +23,44 @@
 
 namespace gateway::forwarder {
 
+namespace {
+std::string url_encode_component(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (char c : value) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.' || c == '~') {
+            result += c;
+        } else {
+            static constexpr char hex[] = "0123456789ABCDEF";
+            result += '%';
+            result += hex[static_cast<unsigned char>(c) >> 4];
+            result += hex[static_cast<unsigned char>(c) & 0x0F];
+        }
+    }
+    return result;
+}
+
+std::string build_proxy_auth_url(const std::string& base_url,
+                                  const std::string& username,
+                                  const std::string& password) {
+    // Insert user:pass@ before the host portion of the URL.
+    auto scheme_end = base_url.find("://");
+    if (scheme_end == std::string::npos) return base_url;
+    auto host_start = scheme_end + 3;
+    auto encoded_user = url_encode_component(username);
+    auto encoded_pass = url_encode_component(password);
+    std::string result;
+    result.reserve(base_url.size() + encoded_user.size() + encoded_pass.size() + 2);
+    result.append(base_url, 0, host_start);
+    result.append(encoded_user);
+    result += ':';
+    result.append(encoded_pass);
+    result += '@';
+    result.append(base_url, host_start, std::string::npos);
+    return result;
+}
+}  // namespace
+
 struct Forwarder::Impl {
     ForwardConfig config;
     std::unique_ptr<ConnectionPool> pool;
@@ -309,7 +347,12 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
     if (!request.body.empty()) op->set_body(request.body);
 
     if (!target.proxy_url.empty()) {
-        op->set_proxy(target.proxy_url);
+        if (!target.proxy_username.empty()) {
+            op->set_proxy(build_proxy_auth_url(target.proxy_url,
+                target.proxy_username, target.proxy_password));
+        } else {
+            op->set_proxy(target.proxy_url);
+        }
     }
 
     std::atomic<bool> forwarding_done{false};

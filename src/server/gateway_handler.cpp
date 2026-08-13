@@ -4,6 +4,7 @@
 #include "platform/metrics.h"
 #include "platform/fault_injection.h"
 #include "forwarder/retry_policy.h"
+#include "forwarder/forwarder.h"
 
 #include <photon/thread/thread.h>
 #include <xxhash.h>
@@ -336,6 +337,15 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
         return -1;
     }
     auto& target = dispatched.upstream;
+
+    if (!forwarder::validate_target_auth_headers(target.auth_headers)) {
+        dispatch_.abort(dispatched.lease_token, "invalid_upstream_auth_headers");
+        client.send_text(R"({"type":"error","error":{"code":"provider_protocol_error","message":"Provider authentication contract is invalid"}})");
+        client.close(photon::net::http::WebSocketCloseCode::InternalServerError,
+                     "invalid upstream auth headers");
+        return -1;
+    }
+
     auto upstream_url = photon_websocket_url(target.websocket_url);
     if (upstream_url.empty()) {
         upstream_url = target.base_url;
@@ -356,7 +366,29 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
     if (!target.websocket_protocol.empty())
         http_client->common_headers()->insert("Sec-WebSocket-Protocol", target.websocket_protocol);
     if (!req.user_agent.empty()) http_client->set_user_agent(req.user_agent);
-    if (!target.proxy_url.empty()) http_client->set_proxy(target.proxy_url);
+    if (!target.proxy_url.empty()) {
+        if (!target.proxy_username.empty()) {
+            // Build authenticated proxy URL: scheme://user:pass@host:port
+            auto scheme_end = target.proxy_url.find("://");
+            if (scheme_end != std::string::npos) {
+                auto host_start = scheme_end + 3;
+                std::string auth_url;
+                auth_url.reserve(target.proxy_url.size()
+                    + target.proxy_username.size() + target.proxy_password.size() + 4);
+                auth_url.append(target.proxy_url, 0, host_start);
+                auth_url.append(target.proxy_username);
+                auth_url += ':';
+                auth_url.append(target.proxy_password);
+                auth_url += '@';
+                auth_url.append(target.proxy_url, host_start, std::string::npos);
+                http_client->set_proxy(auth_url);
+            } else {
+                http_client->set_proxy(target.proxy_url);
+            }
+        } else {
+            http_client->set_proxy(target.proxy_url);
+        }
+    }
     const auto forwarded_ack = dispatch_.record_lease_evidence(
         dispatched.lease_token, dispatch::LeaseEvidenceStage::Forwarded,
         "realtime Provider handshake authorized");
