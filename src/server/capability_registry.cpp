@@ -40,6 +40,10 @@ constexpr CapabilitySpec kGeminiGenerate{
     Capability::GeminiGenerate, "gemini_generate", Endpoint::Gemini, Format::Gemini, true, true, false, false};
 constexpr CapabilitySpec kAntigravity{
     Capability::Antigravity, "antigravity", Endpoint::Antigravity, Format::Anthropic, true, true, false, false};
+constexpr CapabilitySpec kAudioTts{
+    Capability::AudioTts, "audio_tts", Endpoint::AudioTts, Format::OpenAIChatCompletions, false, true, false, false};
+constexpr CapabilitySpec kAudioStt{
+    Capability::AudioStt, "audio_stt", Endpoint::AudioStt, Format::OpenAIChatCompletions, false, true, false, false};
 
 bool eq_any(std::string_view value, std::initializer_list<std::string_view> values) {
     for (auto candidate : values) {
@@ -154,6 +158,8 @@ MatchedCapability route_openai(std::string_view method, std::string_view path,
         && safe_segment(relative.substr(std::string_view("/live/").size())))
         return {&kRealtime, "live_sideband", force_platform};
     if (auto r = match("/alpha/search", "POST", kSearch, "alpha_search"); r.spec) return r;
+    if (auto r = match("/audio/speech", "POST", kAudioTts, "audio_speech"); r.spec) return r;
+    if (auto r = match("/audio/transcriptions", "POST", kAudioStt, "audio_transcriptions"); r.spec) return r;
     if (auto r = match("/embeddings", "POST", kEmbeddings, "embeddings"); r.spec) return r;
     if (auto r = match("/images/generations", "POST", kImagesSync, "images_generations"); r.spec) return r;
     if (auto r = match("/images/edits", "POST", kImagesSync, "images_edits"); r.spec) return r;

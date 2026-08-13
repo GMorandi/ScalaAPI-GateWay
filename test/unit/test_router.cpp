@@ -121,6 +121,8 @@ TEST(CapabilityRegistryTest, CoversApprovedMediaAndRealtimeRoutes) {
         {"POST", "/v1/responses/resp_123/cancel", "responses_subpath"},
         {"POST", "/v1/live", "realtime"},
         {"GET", "/backend-api/codex/call_123", "realtime"},
+        {"POST", "/v1/audio/speech", "audio_tts"},
+        {"POST", "/v1/audio/transcriptions", "audio_stt"},
         {"GET", "/v1beta/models/gemini-2.5-pro", "gemini_models"},
         {"POST", "/antigravity/v1/messages", "antigravity"},
         {"GET", "/antigravity/v1/models", "antigravity"},

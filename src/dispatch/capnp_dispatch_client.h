@@ -22,6 +22,8 @@ struct DispatchRequest {
         AlphaSearch = 9,
         Realtime = 10,
         Antigravity = 11,
+        AudioTts = 12,
+        AudioStt = 13,
     };
 
     std::string api_key_hash;

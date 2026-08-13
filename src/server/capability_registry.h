@@ -24,6 +24,8 @@ enum class Capability {
     GeminiModels,
     GeminiGenerate,
     Antigravity,
+    AudioTts,
+    AudioStt,
 };
 
 struct CapabilitySpec {

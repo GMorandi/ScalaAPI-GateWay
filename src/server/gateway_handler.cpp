@@ -672,7 +672,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         || matched.operation == "images_generations" || matched.operation == "images_edits"
         || matched.operation == "images_generations_async" || matched.operation == "images_edits_async"
         || matched.operation == "images_batch_create" || matched.operation == "videos_generations"
-        || matched.operation == "videos_edits" || matched.operation == "videos_extensions";
+        || matched.operation == "videos_edits" || matched.operation == "videos_extensions"
+        || matched.operation == "audio_speech" || matched.operation == "audio_transcriptions";
     if (needs_model && ((is_json_request(req) && !valid_json_object(req.body))
         || parsed.model.empty())) {
         resp.status_code = 400;
@@ -729,6 +730,87 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
             metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
             return 0;
+        }
+    }
+    if (spec.capability == Capability::AudioTts && is_json_request(req)) {
+        rapidjson::Document tts_doc;
+        tts_doc.Parse(req.body.data(), req.body.size());
+        if (tts_doc.HasParseError() || !tts_doc.IsObject()) {
+            resp.status_code = 400;
+            resp.body = R"({"error":{"type":"invalid_request_error","message":"A JSON object with input and voice is required"}})";
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+        if (!tts_doc.HasMember("input") || !tts_doc["input"].IsString()) {
+            resp.status_code = 400;
+            resp.body = R"({"error":{"type":"invalid_request_error","message":"input is required and must be a string"}})";
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+        auto input_str = std::string_view(tts_doc["input"].GetString());
+        if (input_str.empty() || input_str.size() > 4096) {
+            resp.status_code = 400;
+            resp.body = R"({"error":{"type":"invalid_request_error","message":"input must be between 1 and 4096 characters"}})";
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+        if (!tts_doc.HasMember("voice") || !tts_doc["voice"].IsString()) {
+            resp.status_code = 400;
+            resp.body = R"({"error":{"type":"invalid_request_error","message":"voice is required and must be a string"}})";
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+        if (tts_doc.HasMember("response_format")) {
+            if (!tts_doc["response_format"].IsString()) {
+                resp.status_code = 400;
+                resp.body = R"({"error":{"type":"invalid_request_error","message":"response_format must be a string"}})";
+                metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+                return 0;
+            }
+            auto fmt = std::string_view(tts_doc["response_format"].GetString());
+            if (fmt != "mp3" && fmt != "opus" && fmt != "aac" && fmt != "flac"
+                && fmt != "wav" && fmt != "pcm") {
+                resp.status_code = 400;
+                resp.body = R"({"error":{"type":"invalid_request_error","message":"response_format must be one of: mp3, opus, aac, flac, wav, pcm"}})";
+                metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+                return 0;
+            }
+        }
+    }
+    if (spec.capability == Capability::AudioStt) {
+        if (is_json_request(req)) {
+            rapidjson::Document stt_doc;
+            stt_doc.Parse(req.body.data(), req.body.size());
+            if (stt_doc.HasParseError() || !stt_doc.IsObject()) {
+                resp.status_code = 400;
+                resp.body = R"({"error":{"type":"invalid_request_error","message":"A JSON object is required"}})";
+                metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+                return 0;
+            }
+            if (stt_doc.HasMember("language") && !stt_doc["language"].IsString()) {
+                resp.status_code = 400;
+                resp.body = R"({"error":{"type":"invalid_request_error","message":"language must be a string"}})";
+                metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+                return 0;
+            }
+            if (stt_doc.HasMember("language")) {
+                auto lang = std::string_view(stt_doc["language"].GetString());
+                if (lang.size() > 5) {
+                    resp.status_code = 400;
+                    resp.body = R"({"error":{"type":"invalid_request_error","message":"language must be a BCP-47 tag of at most 5 characters"}})";
+                    metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                    metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+                    return 0;
+                }
+            }
         }
     }
     bool is_stream = spec.can_stream && (parsed.stream
