@@ -1,0 +1,12 @@
+{
+  "id": "chatcmpl-xai-golden-v1",
+  "object": "chat.completion",
+  "created": 1730000000,
+  "model": "grok-3",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "Sunny in Vienna."},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16}
+}

@@ -465,3 +465,77 @@ TEST(ProtocolGolden, ToolCallResponseGoldensConvertAcrossProviders) {
         }
     }
 }
+
+TEST(ProtocolGolden, XaiFixturesParseAsOpenAICompatible) {
+    using namespace gateway::protocol;
+
+    const auto request = openai::parse_request(read_fixture("xai_chat_request_v1.json"));
+    EXPECT_EQ(request.model, "grok-3");
+    EXPECT_EQ(request.system, "You are precise.");
+    EXPECT_TRUE(request.stream);
+    EXPECT_EQ(request.max_tokens, 128);
+    ASSERT_EQ(request.messages.size(), 1u);
+    EXPECT_EQ(request.messages[0].text_content(), "Weather in Vienna?");
+
+    const auto response_body = read_fixture("xai_chat_response_v1.json");
+    EXPECT_FALSE(gateway::forwarder::has_invalid_success_payload(
+        200, "application/json", response_body));
+
+    const auto stream_frames = parse_sse_fixture(read_fixture("xai_chat_stream_v1.sse"));
+    ASSERT_EQ(stream_frames.size(), 4u);
+    EXPECT_EQ(openai::parse_stream_event(stream_frames[0].data).type,
+        StreamDelta::Type::MessageStart);
+    auto text = openai::parse_stream_event(stream_frames[1].data);
+    EXPECT_EQ(text.type, StreamDelta::Type::TextDelta);
+    EXPECT_EQ(text.text, "Sunny in Vienna.");
+    EXPECT_EQ(openai::parse_stream_event(stream_frames[2].data).type,
+        StreamDelta::Type::MessageEnd);
+    EXPECT_EQ(openai::parse_stream_event(stream_frames[3].data).type,
+        StreamDelta::Type::Done);
+}
+
+TEST(ProtocolGolden, XaiResponseConvertsAcrossProviders) {
+    using namespace gateway::protocol;
+
+    const auto xai_body = read_fixture("xai_chat_response_v1.json");
+    constexpr std::array targets{
+        Format::Anthropic,
+        Format::Gemini,
+        Format::OpenAIResponses,
+    };
+    for (const auto target : targets) {
+        const auto converted = Converter::convert_response_checked(
+            xai_body, Format::OpenAIChatCompletions, target, "grok-3");
+        SCOPED_TRACE(std::string("target=") + std::to_string(static_cast<int>(target)));
+        ASSERT_TRUE(converted.success);
+        EXPECT_NE(converted.body.find("Sunny in Vienna."), std::string::npos);
+    }
+}
+
+TEST(ProtocolGolden, XaiToolCallConvertsAcrossProviders) {
+    using namespace gateway::protocol;
+
+    const auto xai_toolcall = read_fixture("xai_chat_toolcall_response_v1.json");
+    constexpr std::array targets{
+        Format::Anthropic,
+        Format::Gemini,
+        Format::OpenAIResponses,
+    };
+    for (const auto target : targets) {
+        const auto converted = Converter::convert_response_checked(
+            xai_toolcall, Format::OpenAIChatCompletions, target, "grok-3");
+        SCOPED_TRACE(std::string("target=") + std::to_string(static_cast<int>(target)));
+        ASSERT_TRUE(converted.success);
+        EXPECT_NE(converted.body.find("get_weather"), std::string::npos);
+    }
+}
+
+TEST(ProtocolGolden, XaiErrorsNormalizeAcrossTargets) {
+    using namespace gateway::protocol;
+
+    const auto errors = read_fixture("xai_provider_errors_v1.json");
+    EXPECT_NE(errors.find("\"status\": 401"), std::string::npos);
+    EXPECT_NE(errors.find("\"status\": 429"), std::string::npos);
+    EXPECT_NE(errors.find("rate_limit_error"), std::string::npos);
+    EXPECT_NE(errors.find("authentication_error"), std::string::npos);
+}

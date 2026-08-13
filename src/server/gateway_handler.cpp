@@ -81,6 +81,7 @@ protocol::Format format_from_name(std::string_view name, protocol::Format fallba
     if (name == "openai_chat" || name == "chat_completions") return protocol::Format::OpenAIChatCompletions;
     if (name == "openai_responses" || name == "responses") return protocol::Format::OpenAIResponses;
     if (name == "gemini") return protocol::Format::Gemini;
+    if (name == "grok" || name == "xai") return protocol::Format::OpenAIChatCompletions;
     return fallback;
 }
 
@@ -874,9 +875,11 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 ? protocol::Format::Anthropic
                 : target.platform == "gemini" || target.platform == "google"
                     ? protocol::Format::Gemini
-                    : target.upstream_path == "/v1/responses"
-                        ? protocol::Format::OpenAIResponses
-                        : protocol::Format::OpenAIChatCompletions);
+                    : target.platform == "grok" || target.platform == "xai"
+                        ? protocol::Format::OpenAIChatCompletions
+                        : target.upstream_path == "/v1/responses"
+                            ? protocol::Format::OpenAIResponses
+                            : protocol::Format::OpenAIChatCompletions);
         last_upstream_format = upstream_format;
 
         std::string upstream_body = req.body.empty() || !chat_capability(spec.capability)

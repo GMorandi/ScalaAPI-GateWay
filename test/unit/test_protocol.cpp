@@ -1301,3 +1301,29 @@ TEST(UnknownFieldPolicy, StreamParsersIgnoreExtraFields) {
     EXPECT_EQ(gemini_delta.text, "World");
     EXPECT_EQ(gemini_delta.finish_reason, "stop");
 }
+
+TEST(XaiProvider, BearerAuthHeaderPassesValidation) {
+    EXPECT_TRUE(gateway::forwarder::validate_target_auth_headers({
+        {"Authorization", "Bearer xai-mock-key"},
+    }));
+}
+
+TEST(XaiProvider, OpenAICompatibleRequestParsesAsChatCompletions) {
+    std::string body = R"({
+        "model": "grok-3",
+        "messages": [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello Grok"}
+        ],
+        "stream": false,
+        "max_tokens": 512
+    })";
+
+    auto req = openai::parse_request(body);
+    EXPECT_EQ(req.model, "grok-3");
+    EXPECT_FALSE(req.stream);
+    EXPECT_EQ(req.max_tokens, 512);
+    EXPECT_EQ(req.system, "You are helpful.");
+    ASSERT_EQ(req.messages.size(), 1u);
+    EXPECT_EQ(req.messages[0].text_content(), "Hello Grok");
+}
