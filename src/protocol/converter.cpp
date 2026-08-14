@@ -489,8 +489,18 @@ std::string Converter::convert_stream_event(std::string_view sse_data,
     case Format::Gemini:
         delta = gemini::parse_stream_event(sse_data);
         break;
-    case Format::Anthropic:
+    case Format::Anthropic: {
+        rapidjson::Document doc;
+        doc.Parse(sse_data.data(), sse_data.size());
+        std::string_view event_type;
+        if (!doc.HasParseError() && doc.IsObject()
+            && doc.HasMember("type") && doc["type"].IsString()) {
+            event_type = std::string_view(doc["type"].GetString(),
+                                          doc["type"].GetStringLength());
+        }
+        delta = anthropic::parse_stream_event(event_type, sse_data);
         break;
+    }
     }
 
     switch (to) {
@@ -755,6 +765,14 @@ std::string response_text(const rj::Value& root) {
 }
 
 bool has_unsupported_response_shape(const rj::Value& root, Format from) {
+    if (from == Format::OpenAIChatCompletions && root.HasMember("choices")
+        && root["choices"].IsArray() && root["choices"].Size() > 1) {
+        return true;
+    }
+    if (from == Format::Gemini && root.HasMember("candidates")
+        && root["candidates"].IsArray() && root["candidates"].Size() > 1) {
+        return true;
+    }
     if (from == Format::OpenAIChatCompletions && root.HasMember("choices")
         && root["choices"].IsArray() && !root["choices"].Empty()) {
         const auto& choice = root["choices"][0];
