@@ -1349,32 +1349,70 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
 
     if (!is_stream && !terminal_abort && !forward_result.malformed_usage
         && forward_result.status_code >= 200 && forward_result.status_code < 400
-        && chat_capability(spec.capability) && !resp.body.empty()) {
-        const auto policy = dispatch_.evaluate_response_content(
-            dispatch_result.lease_token, resp.body, std::string(spec.name));
-        switch (dispatch::content_policy_disposition(policy)) {
-            case dispatch::ContentPolicyDisposition::Allow:
-                break;
-            case dispatch::ContentPolicyDisposition::Block:
+        && !resp.body.empty()) {
+        if (chat_capability(spec.capability)) {
+            // Chat capabilities: full content policy evaluation
+            const auto policy = dispatch_.evaluate_response_content(
+                dispatch_result.lease_token, resp.body, std::string(spec.name));
+            switch (dispatch::content_policy_disposition(policy)) {
+                case dispatch::ContentPolicyDisposition::Allow:
+                    break;
+                case dispatch::ContentPolicyDisposition::Block:
+                    response_policy_overridden = true;
+                    resp.status_code = 400;
+                    resp.content_type = "application/json";
+                    resp.body = error_json("content_policy_violation",
+                        "Provider response was withheld by the active content policy");
+                    resp.headers.emplace_back("Cache-Control", "no-store");
+                    metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case dispatch::ContentPolicyDisposition::FailClosed:
+                    response_policy_overridden = true;
+                    resp.status_code = 503;
+                    resp.content_type = "application/json";
+                    resp.body = error_json("content_policy_unavailable",
+                        "Provider response could not be cleared for delivery");
+                    resp.headers.emplace_back("Cache-Control", "no-store");
+                    metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                    break;
+            }
+        } else {
+            // Non-chat capabilities: explicit policy decision required
+            // Binary/media capabilities (images, audio, video) require explicit allow/block
+            // Control operations (models, count_tokens) are always allowed
+            // Embeddings are allowed but logged for audit
+            bool explicit_allow = false;
+            if (spec.capability == Capability::Models || spec.capability == Capability::CountTokens
+                || spec.capability == Capability::GeminiModels) {
+                explicit_allow = true;  // Control operations are safe
+            } else if (spec.capability == Capability::Embeddings) {
+                explicit_allow = true;  // Embeddings are numeric, low risk
+                LOG_DEBUG("Embeddings response for request {} capability {} - allowed by policy",
+                          request_id, spec.name);
+            } else if (spec.capability == Capability::ImagesSync || spec.capability == Capability::ImagesAsync
+                       || spec.capability == Capability::ImagesBatch || spec.capability == Capability::Videos
+                       || spec.capability == Capability::AudioTts || spec.capability == Capability::AudioStt) {
+                // Media capabilities: require explicit classifier or block
+                // For now, block until classifier is implemented
                 response_policy_overridden = true;
                 resp.status_code = 400;
                 resp.content_type = "application/json";
-                resp.body = error_json("content_policy_violation",
-                    "Provider response was withheld by the active content policy");
+                resp.body = error_json("content_policy_unavailable",
+                    "Media content policy classifier not yet implemented for this capability");
                 resp.headers.emplace_back("Cache-Control", "no-store");
                 metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
-                break;
-            case dispatch::ContentPolicyDisposition::FailClosed:
+                LOG_WARN("Media capability {} response blocked - classifier not implemented", spec.name);
+            } else {
+                // Unknown capability: fail closed for security
                 response_policy_overridden = true;
                 resp.status_code = 503;
                 resp.content_type = "application/json";
                 resp.body = error_json("content_policy_unavailable",
-                    "Provider response could not be cleared for delivery");
+                    "Content policy decision unavailable for this capability");
                 resp.headers.emplace_back("Cache-Control", "no-store");
                 metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
-                LOG_ERROR("Response content policy failed closed for request {} lease {}: {}",
-                    request_id, dispatch_result.lease_token, policy.error_code);
-                break;
+                LOG_ERROR("Unknown capability {} response blocked - no policy decision", spec.name);
+            }
         }
     }
 
