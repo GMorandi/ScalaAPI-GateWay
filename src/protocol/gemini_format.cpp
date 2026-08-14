@@ -59,6 +59,7 @@ ChatRequest parse_request(std::string_view body) {
             msg.role = (role == "model") ? "assistant" : role;
 
             if (c.HasMember("parts") && c["parts"].IsArray()) {
+                int tool_call_counter = 0;
                 for (auto& p : c["parts"].GetArray()) {
                     if (!p.IsObject()) continue;
                     if (p.HasMember("text") && p["text"].IsString()) {
@@ -68,7 +69,7 @@ ChatRequest parse_request(std::string_view body) {
                         ContentBlock b;
                         b.type = ContentBlock::Type::ToolUse;
                         b.tool_name = get_str(fc, "name");
-                        b.tool_call_id = b.tool_name;
+                        b.tool_call_id = b.tool_name + "_" + std::to_string(++tool_call_counter);
                         if (fc.HasMember("args") && fc["args"].IsObject()) {
                             rj::StringBuffer sb;
                             rj::Writer<rj::StringBuffer> w(sb);

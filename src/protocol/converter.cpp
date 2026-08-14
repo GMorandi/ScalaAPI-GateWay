@@ -693,12 +693,13 @@ std::vector<ExtractedToolCall> extract_tool_calls(Format from, const rj::Value& 
             if (!candidate.IsObject() || !candidate.HasMember("content") || !candidate["content"].IsObject()) return calls;
             const auto& content = candidate["content"];
             if (!content.HasMember("parts") || !content["parts"].IsArray()) return calls;
+            int gemini_tool_counter = 0;
             for (const auto& part : content["parts"].GetArray()) {
                 if (!part.IsObject() || !part.HasMember("functionCall") || !part["functionCall"].IsObject()) continue;
                 const auto& fc = part["functionCall"];
                 ExtractedToolCall call;
                 call.name = member_string(fc, "name");
-                call.id = call.name;
+                call.id = call.name + "_" + std::to_string(++gemini_tool_counter);
                 if (fc.HasMember("args") && fc["args"].IsObject()) {
                     rj::StringBuffer sb;
                     rj::Writer<rj::StringBuffer> w(sb);

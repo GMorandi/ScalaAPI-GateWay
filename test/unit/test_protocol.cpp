@@ -1238,7 +1238,7 @@ TEST(ToolCallResponse, GeminiToResponsesConversion) {
     ASSERT_TRUE(result.success);
     EXPECT_NE(result.body.find("\"type\":\"function_call\""), std::string::npos);
     EXPECT_NE(result.body.find("\"name\":\"get_time\""), std::string::npos);
-    EXPECT_NE(result.body.find("\"call_id\":\"get_time\""), std::string::npos);
+    EXPECT_NE(result.body.find("\"call_id\":\"get_time_1\""), std::string::npos);
 }
 
 TEST(ToolCallResponse, ResponsesToAnthropicConversion) {
