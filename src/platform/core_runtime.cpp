@@ -9,6 +9,9 @@
 #include "usage/usage_collector.h"
 #include "usage/usage_reporter.h"
 
+#include <format>
+#include <stdexcept>
+
 #include <photon/photon.h>
 #include <photon/thread/thread.h>
 #include <photon/thread/thread11.h>
@@ -65,6 +68,11 @@ void CoreRuntime::start() {
                 impl_->config.garnet_use_tls,
                 impl_->config.garnet_server_name,
                 impl_->config.garnet_ca_cert_path);
+            if (!state->garnet->ping()) {
+                throw std::runtime_error(
+                    std::format("Core {}: Garnet unreachable at {}:{}",
+                                i, impl_->config.garnet_host, impl_->config.garnet_port));
+            }
             state->dispatch = dispatch::CapnpDispatchClient::connect(
                 impl_->config.capnp_uds_path);
             state->usage_dispatch = dispatch::CapnpDispatchClient::connect(
@@ -88,6 +96,11 @@ void CoreRuntime::start() {
             state->http_server = server::HttpServer::create(
                 http_cfg, *state->garnet, *state->dispatch,
                 *state->speculative_cache, *state->collector);
+            if (!state->http_server) {
+                throw std::runtime_error(
+                    std::format("Core {}: failed to create HTTP server on port {}",
+                                i, impl_->config.listen_port));
+            }
 
             state->running.store(true);
 

@@ -300,7 +300,7 @@ std::unique_ptr<HttpServer> HttpServer::create(
     impl->sock_server = photon::net::new_tcp_socket_server();
     if (!impl->sock_server) {
         LOG_ERROR("Failed to create TCP socket server");
-        return srv;
+        return nullptr;
     }
 
     if (impl->sock_server->setsockopt<int>(SOL_SOCKET, SO_REUSEPORT, 1) != 0
@@ -308,21 +308,21 @@ std::unique_ptr<HttpServer> HttpServer::create(
         LOG_ERROR("Failed to enable SO_REUSEPORT on core {}", config.core_id);
         delete impl->sock_server;
         impl->sock_server = nullptr;
-        return srv;
+        return nullptr;
     }
 
     if (impl->sock_server->bind(config.port) != 0) {
         LOG_ERROR("Failed to bind port {}", config.port);
         delete impl->sock_server;
         impl->sock_server = nullptr;
-        return srv;
+        return nullptr;
     }
 
     if (impl->sock_server->listen(1024) != 0) {
         LOG_ERROR("Failed to listen on port {}", config.port);
         delete impl->sock_server;
         impl->sock_server = nullptr;
-        return srv;
+        return nullptr;
     }
 
     impl->http_server = photon::net::http::new_http_server();
@@ -330,7 +330,7 @@ std::unique_ptr<HttpServer> HttpServer::create(
         LOG_ERROR("Failed to create HTTP server");
         delete impl->sock_server;
         impl->sock_server = nullptr;
-        return srv;
+        return nullptr;
     }
 
     photon::net::http::DelegateHTTPHandler handler{&impl->ctx, http_handler};

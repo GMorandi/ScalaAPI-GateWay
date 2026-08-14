@@ -49,9 +49,18 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
     }
 
     if (path == "/ready") {
-        bool ready = impl_->dispatch->is_connected();
+        bool dispatch_ok = impl_->dispatch->is_connected();
+        bool garnet_ok = impl_->garnet->ping();
+        bool sqlite_ok = impl_->collector->durable();
+        bool ready = dispatch_ok && garnet_ok && sqlite_ok;
         resp.status_code = ready ? 200 : 503;
-        resp.body = ready ? R"({"status":"ready"})" : R"({"status":"not_ready"})";
+        if (ready) {
+            resp.body = R"({"status":"ready"})";
+        } else {
+            resp.body = std::format(
+                R"({{"status":"not_ready","dispatch":{},"garnet":{},"sqlite":{}}})",
+                dispatch_ok, garnet_ok, sqlite_ok);
+        }
         return 0;
     }
 
