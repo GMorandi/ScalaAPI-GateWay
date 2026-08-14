@@ -58,6 +58,8 @@ struct DispatchRequest {
     alphaSearch @9;
     realtime @10;
     antigravity @11;
+    audioTts @12;
+    audioStt @13;
   }
 }
 
