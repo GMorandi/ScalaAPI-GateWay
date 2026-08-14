@@ -95,6 +95,8 @@ ChatRequest parse_request(std::string_view body) {
                         }
                         msg.tool_call_id = b.tool_call_id;
                         msg.content.push_back(std::move(b));
+                    } else {
+                        req.unsupported_content = true;
                     }
                 }
             }

@@ -98,13 +98,20 @@ ChatRequest parse_request(std::string_view body) {
                                 if (block["content"].IsString())
                                     b.text = block["content"].GetString();
                                 else if (block["content"].IsArray()) {
-                                    for (auto& sub : block["content"].GetArray())
-                                        if (sub.IsObject() && sub.HasMember("text"))
+                                    for (auto& sub : block["content"].GetArray()) {
+                                        if (!sub.IsObject()) continue;
+                                        auto sub_type = get_str(sub, "type");
+                                        if (sub_type == "text" && sub.HasMember("text"))
                                             b.text += sub["text"].GetString();
+                                        else
+                                            req.unsupported_content = true;
+                                    }
                                 }
                             }
                             msg.tool_call_id = b.tool_call_id;
                             msg.content.push_back(std::move(b));
+                        } else {
+                            req.unsupported_content = true;
                         }
                     }
                 }

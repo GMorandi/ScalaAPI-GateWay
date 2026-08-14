@@ -270,7 +270,7 @@ TEST(Conversion, OpenAIToAnthropic) {
     auto result = Converter::convert_request(
         body, Format::OpenAIChatCompletions, Format::Anthropic, "claude-sonnet-4-20250514");
 
-    auto parsed = anthropic::parse_request(result);
+    auto parsed = anthropic::parse_request(result.body);
     EXPECT_EQ(parsed.model, "claude-sonnet-4-20250514");
     EXPECT_EQ(parsed.system, "Be brief");
     EXPECT_EQ(parsed.max_tokens, 100);
@@ -290,7 +290,7 @@ TEST(Conversion, AnthropicToOpenAI) {
     auto result = Converter::convert_request(
         body, Format::Anthropic, Format::OpenAIChatCompletions, "gpt-4o");
 
-    auto parsed = openai::parse_request(result);
+    auto parsed = openai::parse_request(result.body);
     EXPECT_EQ(parsed.model, "gpt-4o");
     EXPECT_EQ(parsed.system, "Helpful assistant");
     EXPECT_EQ(parsed.max_tokens, 500);
@@ -311,7 +311,7 @@ TEST(Conversion, OpenAIToGemini) {
     auto result = Converter::convert_request(
         body, Format::OpenAIChatCompletions, Format::Gemini, "gemini-pro");
 
-    auto parsed = gemini::parse_request(result);
+    auto parsed = gemini::parse_request(result.body);
     EXPECT_EQ(parsed.system, "Sys");
     EXPECT_EQ(parsed.max_tokens, 256);
     ASSERT_EQ(parsed.messages.size(), 1u);
@@ -322,7 +322,7 @@ TEST(Conversion, SameFormatPassthrough) {
     std::string body = R"({"model":"gpt-4","messages":[{"role":"user","content":"Hi"}]})";
     auto result = Converter::convert_request(
         body, Format::OpenAIChatCompletions, Format::OpenAIChatCompletions, "");
-    EXPECT_EQ(result, body);
+    EXPECT_EQ(result.body, body);
 }
 
 TEST(EmbeddingsValidation, AcceptsStringAndStringArrayInputs) {

@@ -77,7 +77,7 @@ static void BM_ConvertOpenAIToAnthropic(benchmark::State& state) {
     for (auto _ : state) {
         auto result = Converter::convert_request(
             kOpenAI1KB, Format::OpenAIChatCompletions, Format::Anthropic, "claude-sonnet-4-20250514");
-        benchmark::DoNotOptimize(result);
+        benchmark::DoNotOptimize(result.body);
     }
     state.SetBytesProcessed(state.iterations() * kOpenAI1KB.size());
 }
@@ -87,7 +87,7 @@ static void BM_ConvertAnthropicToOpenAI(benchmark::State& state) {
     for (auto _ : state) {
         auto result = Converter::convert_request(
             kAnthropicBody, Format::Anthropic, Format::OpenAIChatCompletions, "gpt-4o");
-        benchmark::DoNotOptimize(result);
+        benchmark::DoNotOptimize(result.body);
     }
     state.SetBytesProcessed(state.iterations() * kAnthropicBody.size());
 }
@@ -97,7 +97,7 @@ static void BM_ConvertOpenAIToGemini(benchmark::State& state) {
     for (auto _ : state) {
         auto result = Converter::convert_request(
             kOpenAI1KB, Format::OpenAIChatCompletions, Format::Gemini, "gemini-2.0-flash");
-        benchmark::DoNotOptimize(result);
+        benchmark::DoNotOptimize(result.body);
     }
     state.SetBytesProcessed(state.iterations() * kOpenAI1KB.size());
 }

@@ -78,6 +78,8 @@ ChatRequest parse_request(std::string_view body) {
                                 auto pt = get_str(part, "type");
                                 if (pt == "input_text" || pt == "text" || pt == "output_text") {
                                     msg.add_text(get_str(part, "text"));
+                                } else {
+                                    req.unsupported_content = true;
                                 }
                             }
                         }

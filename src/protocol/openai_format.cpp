@@ -17,7 +17,8 @@ static std::string get_str(const rj::Value& obj, const char* key) {
     return {};
 }
 
-static void extract_content_blocks(const rj::Value& content_val, Message& msg) {
+static void extract_content_blocks(const rj::Value& content_val, Message& msg,
+                                   bool& unsupported) {
     if (content_val.IsString()) {
         msg.add_text(content_val.GetString());
     } else if (content_val.IsArray()) {
@@ -45,6 +46,8 @@ static void extract_content_blocks(const rj::Value& content_val, Message& msg) {
                 if (part.HasMember("content") && part["content"].IsString())
                     b.text = part["content"].GetString();
                 msg.content.push_back(std::move(b));
+            } else {
+                unsupported = true;
             }
         }
     }
@@ -100,7 +103,7 @@ ChatRequest parse_request(std::string_view body) {
             }
 
             if (m.HasMember("content") && !m["content"].IsNull())
-                extract_content_blocks(m["content"], msg);
+                extract_content_blocks(m["content"], msg, req.unsupported_content);
 
             if (m.HasMember("tool_calls") && m["tool_calls"].IsArray()) {
                 for (auto& tc : m["tool_calls"].GetArray()) {

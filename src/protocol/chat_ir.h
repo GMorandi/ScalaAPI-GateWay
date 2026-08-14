@@ -73,6 +73,7 @@ struct ChatRequest {
     std::optional<double> top_p;
     std::vector<std::string> stop;
     std::string metadata_user_id;
+    bool unsupported_content = false;
 };
 
 struct StreamDelta {

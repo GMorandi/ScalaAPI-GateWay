@@ -188,9 +188,10 @@ TEST(ProtocolGolden, RequestGoldensCoverEveryProviderPair) {
 
     for (const auto& source : requests) {
         for (const auto target : targets) {
-            const auto body = Converter::convert_request(
+            const auto conv = Converter::convert_request(
                 read_fixture(source.fixture), source.format, target,
                 target_model(target));
+            const auto& body = conv.body;
             SCOPED_TRACE(std::string("source=") + std::to_string(
                 static_cast<int>(source.format)) + ", target="
                 + std::to_string(static_cast<int>(target)));

@@ -32,6 +32,12 @@ struct ResponseConversionResult {
     std::string error;
 };
 
+struct RequestConversionResult {
+    bool success = false;
+    std::string body;
+    std::string error;
+};
+
 struct MediaUsageMetadata {
     int input_image_count = 0;
     int output_image_count = 0;
@@ -53,9 +59,9 @@ class Converter {
 public:
     static ParsedRequest parse(std::string_view body, Format hint);
 
-    static std::string convert_request(std::string_view body,
-                                        Format from, Format to,
-                                        const std::string& mapped_model);
+    static RequestConversionResult convert_request(std::string_view body,
+                                                    Format from, Format to,
+                                                    const std::string& mapped_model);
 
     static std::string convert_response(std::string_view body,
                                         Format from, Format to,

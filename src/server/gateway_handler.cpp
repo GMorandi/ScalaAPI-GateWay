@@ -1017,9 +1017,21 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                             : protocol::Format::OpenAIChatCompletions);
         last_upstream_format = upstream_format;
 
-        std::string upstream_body = req.body.empty() || !chat_capability(spec.capability)
-            ? std::string(req.body)
-            : protocol::Converter::convert_request(req.body, inbound_format, upstream_format, target.mapped_model);
+        std::string upstream_body;
+        if (req.body.empty() || !chat_capability(spec.capability)) {
+            upstream_body = req.body;
+        } else {
+            auto conversion = protocol::Converter::convert_request(req.body, inbound_format, upstream_format, target.mapped_model);
+            if (!conversion.success) {
+                forward_result.status_code = 400;
+                forward_result.content_type = "application/json";
+                forward_result.body = R"({"error":{"type":"invalid_request_error","message":")" + conversion.error + R"("}})";
+                metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+                terminal_abort = true;
+                break;
+            }
+            upstream_body = std::move(conversion.body);
+        }
 
         const auto stream_mode = is_stream && inbound_format != upstream_format
             ? forwarder::ProtocolMode::CrossProtocol

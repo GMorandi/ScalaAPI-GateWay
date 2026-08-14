@@ -432,11 +432,11 @@ MediaUsageMetadata Converter::parse_media_response(
     return usage;
 }
 
-std::string Converter::convert_request(std::string_view body,
-                                        Format from, Format to,
-                                        const std::string& mapped_model) {
+RequestConversionResult Converter::convert_request(std::string_view body,
+                                                    Format from, Format to,
+                                                    const std::string& mapped_model) {
     if (from == to && mapped_model.empty()) {
-        return std::string(body);
+        return {true, std::string(body), {}};
     }
 
     ChatRequest ir;
@@ -455,21 +455,25 @@ std::string Converter::convert_request(std::string_view body,
         break;
     }
 
+    if (ir.unsupported_content) {
+        return {false, {}, "Request contains unsupported multimodal content (images, audio, or video)"};
+    }
+
     if (!mapped_model.empty())
         ir.model = mapped_model;
 
     switch (to) {
     case Format::Anthropic:
-        return anthropic::serialize_request(ir);
+        return {true, anthropic::serialize_request(ir), {}};
     case Format::OpenAIChatCompletions:
-        return openai::serialize_request(ir);
+        return {true, openai::serialize_request(ir), {}};
     case Format::OpenAIResponses:
-        return openai_responses::serialize_request(ir);
+        return {true, openai_responses::serialize_request(ir), {}};
     case Format::Gemini:
-        return gemini::serialize_request(ir);
+        return {true, gemini::serialize_request(ir), {}};
     }
 
-    return std::string(body);
+    return {true, std::string(body), {}};
 }
 
 std::string Converter::convert_stream_event(std::string_view sse_data,
