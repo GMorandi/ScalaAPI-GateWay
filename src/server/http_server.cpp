@@ -123,6 +123,16 @@ static int http_handler(void* self, photon::net::http::Request& req,
             resp.write(message.data(), message.size());
             return 0;
         }
+        auto ws_query = target.size() > path.size() ? target.substr(path.size()) : std::string_view{};
+        if (!is_safe_query_string(ws_query)) {
+            resp.set_result(400);
+            constexpr std::string_view message =
+                R"({"error":{"type":"invalid_request_error","message":"Malformed query string"}})";
+            resp.headers.insert("Content-Type", "application/json");
+            resp.headers.content_length(message.size());
+            resp.write(message.data(), message.size());
+            return 0;
+        }
         auto* websocket = photon::net::http::server_accept_websocket(req, resp);
         if (!websocket) return 0;
         std::vector<std::pair<std::string, std::string>> ws_headers;
@@ -131,11 +141,23 @@ static int http_handler(void* self, photon::net::http::Request& req,
                 || header.first == "X-Request-ID" || header.first == "Idempotency-Key")
                 ws_headers.emplace_back(header.first, header.second);
         }
+        std::string ws_client_ip = peer_ip(req);
+        bool ws_trusted_proxy = ipv4_in_cidrs(ws_client_ip, ctx->config.trusted_proxy_cidrs);
+        auto ws_xff = req.headers["X-Forwarded-For"];
+        if (ws_trusted_proxy && !ws_xff.empty()) {
+            auto comma = ws_xff.find(',');
+            ws_client_ip = ws_xff.substr(0, comma);
+            while (!ws_client_ip.empty() && ws_client_ip.back() == ' ')
+                ws_client_ip.pop_back();
+        } else if (ws_trusted_proxy) {
+            auto real_ip = req.headers["X-Real-IP"];
+            if (!real_ip.empty()) ws_client_ip = std::string(real_ip);
+        }
         HttpRequest ws_req{
             .method = "GET", .path = path,
-            .query = target.substr(path.size()),
+            .query = std::string(ws_query),
             .authorization = auth_hdr, .x_api_key = api_key_hdr,
-            .client_ip = peer_ip(req), .accept = req.headers["Accept"],
+            .client_ip = ws_client_ip, .accept = req.headers["Accept"],
             .user_agent = req.headers["User-Agent"],
             .request_id = req.headers["X-Request-ID"],
             .idempotency_key = req.headers["Idempotency-Key"],
