@@ -87,6 +87,7 @@ struct StreamDelta {
         Done,
     };
     Type type = Type::TextDelta;
+    std::string id;
     std::string text;
     std::string tool_call_id;
     std::string tool_name;

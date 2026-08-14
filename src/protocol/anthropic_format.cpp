@@ -238,7 +238,8 @@ std::string serialize_stream_event(const StreamDelta& delta) {
         event_type = "message_start";
         doc.AddMember("type", "message_start", alloc);
         rj::Value message(rj::kObjectType);
-        message.AddMember("id", "msg_stream", alloc);
+        const auto& stream_id = delta.id.empty() ? "msg_gateway" : delta.id.c_str();
+        message.AddMember("id", rj::Value(stream_id, alloc), alloc);
         message.AddMember("type", "message", alloc);
         message.AddMember("role", "assistant", alloc);
         message.AddMember("model", rj::Value(delta.model.c_str(), alloc), alloc);
@@ -330,6 +331,8 @@ StreamDelta parse_stream_event(std::string_view event_type, std::string_view dat
         delta.type = StreamDelta::Type::MessageStart;
         if (doc.HasMember("message") && doc["message"].IsObject()) {
             auto& msg = doc["message"];
+            if (msg.HasMember("id") && msg["id"].IsString())
+                delta.id = msg["id"].GetString();
             if (msg.HasMember("model") && msg["model"].IsString())
                 delta.model = msg["model"].GetString();
             if (msg.HasMember("usage") && msg["usage"].IsObject()) {

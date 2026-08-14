@@ -273,6 +273,8 @@ std::string serialize_stream_event(const StreamDelta& delta) {
     auto& alloc = doc.GetAllocator();
 
     doc.AddMember("object", "chat.completion.chunk", alloc);
+    if (!delta.id.empty())
+        doc.AddMember("id", rj::Value(delta.id.c_str(), alloc), alloc);
     if (!delta.model.empty())
         doc.AddMember("model", rj::Value(delta.model.c_str(), alloc), alloc);
 
@@ -344,6 +346,8 @@ StreamDelta parse_stream_event(std::string_view data) {
 
     if (doc.HasMember("model") && doc["model"].IsString())
         delta.model = doc["model"].GetString();
+    if (doc.HasMember("id") && doc["id"].IsString())
+        delta.id = doc["id"].GetString();
 
     if (!doc.HasMember("choices") || !doc["choices"].IsArray() ||
         doc["choices"].GetArray().Empty())

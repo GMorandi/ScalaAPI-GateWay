@@ -838,6 +838,17 @@ std::string response_model(const rj::Value& root, std::string_view fallback) {
     return model.empty() ? std::string(fallback) : model;
 }
 
+std::string response_id(const rj::Value& root, Format target) {
+    auto id = member_string(root, "id");
+    if (!id.empty()) return id;
+    switch (target) {
+    case Format::OpenAIChatCompletions: return "chatcmpl-gateway";
+    case Format::Anthropic: return "msg_gateway";
+    case Format::OpenAIResponses: return "resp_gateway";
+    default: return {};
+    }
+}
+
 int usage_integer(const rj::Value& usage,
                   std::initializer_list<const char*> keys) {
     for (const auto* key : keys) {
@@ -1049,6 +1060,7 @@ ResponseConversionResult Converter::convert_response_checked(
         return {false, {}, "Upstream response contains unsupported tool or multimodal content"};
     const auto text = response_text(source);
     const auto model = response_model(source, requested_model);
+    const auto id = response_id(source, to);
     const auto finish = parse_finish_reason(from, source);
     const auto tool_calls = extract_tool_calls(from, source);
     const auto effective_finish = tool_calls.empty() ? finish : FinishReason::ToolCalls;
@@ -1058,7 +1070,7 @@ ResponseConversionResult Converter::convert_response_checked(
     output.SetObject();
     auto& alloc = output.GetAllocator();
     if (to == Format::OpenAIChatCompletions) {
-        output.AddMember("id", rj::Value("chatcmpl-gateway", alloc), alloc);
+        output.AddMember("id", rj::Value(id.c_str(), alloc), alloc);
         output.AddMember("object", rj::Value("chat.completion", alloc), alloc);
         output.AddMember("model", rj::Value(model.c_str(), alloc), alloc);
         rj::Value choices(rj::kArrayType), choice(rj::kObjectType), message(rj::kObjectType);
@@ -1088,7 +1100,7 @@ ResponseConversionResult Converter::convert_response_checked(
         choices.PushBack(choice, alloc);
         output.AddMember("choices", choices, alloc);
     } else if (to == Format::Anthropic) {
-        output.AddMember("id", rj::Value("msg_gateway", alloc), alloc);
+        output.AddMember("id", rj::Value(id.c_str(), alloc), alloc);
         output.AddMember("type", rj::Value("message", alloc), alloc);
         output.AddMember("role", rj::Value("assistant", alloc), alloc);
         output.AddMember("model", rj::Value(model.c_str(), alloc), alloc);
@@ -1119,7 +1131,7 @@ ResponseConversionResult Converter::convert_response_checked(
         output.AddMember("content", content, alloc);
         output.AddMember("stop_reason", rj::Value(finish_str.c_str(), alloc), alloc);
     } else if (to == Format::OpenAIResponses) {
-        output.AddMember("id", rj::Value("resp_gateway", alloc), alloc);
+        output.AddMember("id", rj::Value(id.c_str(), alloc), alloc);
         output.AddMember("object", rj::Value("response", alloc), alloc);
         output.AddMember("status", rj::Value(finish_str.c_str(), alloc), alloc);
         output.AddMember("model", rj::Value(model.c_str(), alloc), alloc);

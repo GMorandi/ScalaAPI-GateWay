@@ -560,6 +560,34 @@ TEST(Conversion, UsageIsMappedToGeminiContract) {
     EXPECT_NE(result.find("\"cachedContentTokenCount\":3"), std::string::npos);
 }
 
+TEST(Conversion, PreservesProviderResponseId) {
+    auto to_anthropic = Converter::convert_response_checked(
+        R"({"id":"chatcmpl-abc123","model":"gpt-4o","choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]})",
+        Format::OpenAIChatCompletions, Format::Anthropic, "claude");
+    ASSERT_TRUE(to_anthropic.success);
+    EXPECT_NE(to_anthropic.body.find("\"id\":\"chatcmpl-abc123\""), std::string::npos);
+
+    auto to_openai = Converter::convert_response_checked(
+        R"({"id":"msg_xyz789","type":"message","role":"assistant","model":"claude-3","content":[{"type":"text","text":"hi"}]})",
+        Format::Anthropic, Format::OpenAIChatCompletions, "gpt-4o");
+    ASSERT_TRUE(to_openai.success);
+    EXPECT_NE(to_openai.body.find("\"id\":\"msg_xyz789\""), std::string::npos);
+
+    auto to_responses = Converter::convert_response_checked(
+        R"({"id":"chatcmpl-src","model":"gpt-4o","choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]})",
+        Format::OpenAIChatCompletions, Format::OpenAIResponses, "resp-model");
+    ASSERT_TRUE(to_responses.success);
+    EXPECT_NE(to_responses.body.find("\"id\":\"chatcmpl-src\""), std::string::npos);
+}
+
+TEST(Conversion, FallsBackToDefaultIdWhenSourceMissing) {
+    auto result = Converter::convert_response_checked(
+        R"({"model":"gpt-4o","choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]})",
+        Format::OpenAIChatCompletions, Format::Anthropic, "claude");
+    ASSERT_TRUE(result.success);
+    EXPECT_NE(result.body.find("\"id\":\"msg_gateway\""), std::string::npos);
+}
+
 TEST(StreamPipe, ParsesUsageAcrossCrLfChunkBoundaries) {
     std::vector<std::string> chunks = {
         "data: {\"usage\":{\"prompt_tokens\":4,",
