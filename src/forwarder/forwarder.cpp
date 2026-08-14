@@ -296,6 +296,13 @@ ForwardResult Forwarder::forward(const dispatch::UpstreamTarget& target,
         return result;
     }
 
+    if (target.tls_fingerprint && !target.tls_fingerprint_profile_id.empty()) {
+        result.status_code = 501;
+        result.error = "TLS fingerprint profile not implemented";
+        result.body = R"({"error":{"type":"unsupported","message":"TLS fingerprint profiling is not supported"}})";
+        return result;
+    }
+
     std::string url = target.base_url;
     if (!target.upstream_path.empty()) {
         if (!url.empty() && url.back() != '/' && target.upstream_path.front() != '/')

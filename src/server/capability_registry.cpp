@@ -270,4 +270,11 @@ MatchedCapability match_capability(std::string_view method, std::string_view pat
     return route_openai(method, path, "");
 }
 
+bool path_matches_any(std::string_view path) {
+    for (auto method : {"GET", "POST", "PUT", "DELETE", "PATCH"}) {
+        if (match_capability(method, path).spec) return true;
+    }
+    return false;
+}
+
 }  // namespace gateway::server

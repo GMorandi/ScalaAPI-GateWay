@@ -141,6 +141,12 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
         return impl_->gateway->handle(req, resp, capability);
     }
 
+    if (path_matches_any(path)) {
+        resp.status_code = 405;
+        resp.body = R"({"error":{"type":"method_not_allowed","message":"HTTP method is not supported for this endpoint"}})";
+        return 0;
+    }
+
     resp.status_code = 404;
     resp.body = R"({"error":{"type":"not_found_error","message":"Unknown or unsupported endpoint"}})";
     return 0;

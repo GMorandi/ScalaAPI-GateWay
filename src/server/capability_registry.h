@@ -50,6 +50,8 @@ struct MatchedCapability {
 // before a route is allowed to reach dispatch.
 MatchedCapability match_capability(std::string_view method, std::string_view path);
 
+bool path_matches_any(std::string_view path);
+
 bool is_safe_path_suffix(std::string_view suffix);
 bool is_safe_gemini_model(std::string_view model);
 bool is_safe_query_string(std::string_view query);
