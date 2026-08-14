@@ -133,6 +133,11 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
         if (capability.spec->capability == Capability::Models
             && req.authorization.empty() && req.x_api_key.empty()) {
             auto cached = impl_->garnet->get("models:list");
+            if (cached.error) {
+                resp.status_code = 503;
+                resp.body = R"({"error":{"type":"cache_unavailable","message":"Model catalog temporarily unavailable"}})";
+                return 0;
+            }
             resp.status_code = 200;
             resp.body = cached.found && !cached.value.empty()
                 ? cached.value : R"({"object":"list","data":[]})";

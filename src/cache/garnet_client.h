@@ -11,6 +11,7 @@ namespace gateway::cache {
 
 struct GarnetResponse {
     bool found = false;
+    bool error = false;
     std::string value;
 };
 

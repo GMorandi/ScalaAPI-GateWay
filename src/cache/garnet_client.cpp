@@ -207,19 +207,19 @@ GarnetResponse GarnetClient::get(std::string_view key) {
     auto cmd = std::format("*2\r\n$3\r\nGET\r\n${}\r\n{}\r\n",
                            key.size(), key);
     auto raw = impl_->execute(cmd);
-    if (raw.empty()) return {};
+    if (raw.empty()) return {.found = false, .error = true};  // Connection/command failure
 
     if (raw[0] == '$') {
         if (raw.size() >= 3 && raw[1] == '-') {
-            return {};  // $-1 = nil
+            return {.found = false, .error = false};  // $-1 = nil (key doesn't exist)
         }
         auto crlf = raw.find("\r\n");
-        if (crlf == std::string::npos) return {};
+        if (crlf == std::string::npos) return {.found = false, .error = true};
         auto data = raw.substr(crlf + 2);
         if (data.ends_with("\r\n")) data = data.substr(0, data.size() - 2);
-        return {.found = true, .value = std::move(data)};
+        return {.found = true, .error = false, .value = std::move(data)};
     }
-    return {};
+    return {.found = false, .error = true};  // Unexpected response format
 }
 
 std::vector<GarnetResponse> GarnetClient::mget(std::vector<std::string_view> keys) {

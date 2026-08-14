@@ -58,7 +58,8 @@ TEST_F(RouterTest, ResponsesRoute) {
 
 TEST_F(RouterTest, ModelsRoute) {
     auto resp = request("GET", "/v1/models");
-    EXPECT_EQ(resp.status_code, 200);
+    // When Garnet is unavailable, should return 503 (not 200 with empty list)
+    EXPECT_EQ(resp.status_code, 503);
 }
 
 TEST_F(RouterTest, GeminiRoute) {
