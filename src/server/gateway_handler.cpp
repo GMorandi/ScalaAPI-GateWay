@@ -314,6 +314,7 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
         .content_type = "application/json", .capability = "realtime",
         .idempotency_key = std::string(req.idempotency_key), .realtime_session = true,
         .request_query = std::string(req.query),
+        .request_body = first,
     };
     auto dispatch_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
     int dispatch_transport_retries = 0;
