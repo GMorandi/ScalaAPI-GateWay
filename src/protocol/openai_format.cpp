@@ -43,8 +43,20 @@ static void extract_content_blocks(const rj::Value& content_val, Message& msg,
                 ContentBlock b;
                 b.type = ContentBlock::Type::ToolResult;
                 b.tool_call_id = get_str(part, "tool_use_id");
-                if (part.HasMember("content") && part["content"].IsString())
-                    b.text = part["content"].GetString();
+                if (part.HasMember("content")) {
+                    if (part["content"].IsString())
+                        b.text = part["content"].GetString();
+                    else if (part["content"].IsArray()) {
+                        for (auto& sub : part["content"].GetArray()) {
+                            if (!sub.IsObject()) continue;
+                            auto sub_type = get_str(sub, "type");
+                            if (sub_type == "text" && sub.HasMember("text"))
+                                b.text += sub["text"].GetString();
+                            else
+                                unsupported = true;
+                        }
+                    }
+                }
                 msg.content.push_back(std::move(b));
             } else {
                 unsupported = true;
