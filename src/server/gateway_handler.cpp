@@ -392,9 +392,16 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
             http_client->set_proxy(target.proxy_url);
         }
     }
+    collector_.record_evidence(
+        dispatched.lease_token, "forwarded",
+        "gateway", "realtime Provider handshake authorized");
     const auto forwarded_ack = dispatch_.record_lease_evidence(
         dispatched.lease_token, dispatch::LeaseEvidenceStage::Forwarded,
         "realtime Provider handshake authorized");
+    if (forwarded_ack.acknowledged()) {
+        collector_.acknowledge_evidence(
+            dispatched.lease_token, "forwarded");
+    }
     if (!forwarded_ack.acknowledged()) {
         delete http_client;
         dispatch_.abort(dispatched.lease_token, "forward_evidence_unavailable");
@@ -450,12 +457,18 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
                 sent = client.send_text(frame);
             }
             if (sent > 0 && !output_evidence_recorded.exchange(true)) {
+                collector_.record_evidence(
+                    dispatched.lease_token, "output_started",
+                    "gateway", "first realtime frame written to client");
                 const auto ack = dispatch_.record_lease_evidence(
                     dispatched.lease_token, dispatch::LeaseEvidenceStage::OutputStarted,
                     "first realtime frame written to client");
-                if (!ack.acknowledged()) {
-                    LOG_ERROR("Realtime output evidence failed for request {} lease {}: {}",
-                              request_id, dispatched.lease_token, ack.error_code);
+                if (ack.acknowledged()) {
+                    collector_.acknowledge_evidence(
+                        dispatched.lease_token, "output_started");
+                } else {
+                    LOG_WARN("Realtime output evidence RPC failed, retained for retry: request={} lease={} error={}",
+                             request_id, dispatched.lease_token, ack.error_code);
                 }
             }
         }
@@ -1012,9 +1025,16 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
             ? forwarder::ProtocolMode::CrossProtocol
             : forwarder::ProtocolMode::Passthrough;
 
+        collector_.record_evidence(
+            dispatch_result.lease_token, "forwarded",
+            "gateway", "Provider transport authorized");
         const auto forwarded_ack = dispatch_.record_lease_evidence(
             dispatch_result.lease_token, dispatch::LeaseEvidenceStage::Forwarded,
             "Provider transport authorized");
+        if (forwarded_ack.acknowledged()) {
+            collector_.acknowledge_evidence(
+                dispatch_result.lease_token, "forwarded");
+        }
         if (!forwarded_ack.acknowledged()) {
             const auto abort_ack = dispatch_.abort(dispatch_result.lease_token,
                 "forward_evidence_unavailable");
@@ -1082,12 +1102,18 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 resp.stream = is_stream;
             },
             .output_started = [&] {
+                collector_.record_evidence(
+                    dispatch_result.lease_token, "output_started",
+                    "gateway", "first response bytes written to client");
                 const auto ack = dispatch_.record_lease_evidence(
                     dispatch_result.lease_token, dispatch::LeaseEvidenceStage::OutputStarted,
                     "first response bytes written to client");
-                if (!ack.acknowledged()) {
-                    LOG_ERROR("Output evidence failed for request {} lease {}: {}",
-                              request_id, dispatch_result.lease_token, ack.error_code);
+                if (ack.acknowledged()) {
+                    collector_.acknowledge_evidence(
+                        dispatch_result.lease_token, "output_started");
+                } else {
+                    LOG_WARN("Output evidence RPC failed, retained for retry: request={} lease={} error={}",
+                             request_id, dispatch_result.lease_token, ack.error_code);
                 }
             },
             .client_disconnected = req.client_disconnected,

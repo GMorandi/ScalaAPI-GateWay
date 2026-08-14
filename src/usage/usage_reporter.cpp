@@ -81,16 +81,20 @@ void UsageReporter::run_loop() {
             report.response_content_type = std::move(ev.response_content_type);
             report.response_body = std::move(ev.response_body);
             auto ack = impl_->dispatch->report_usage(report);
-            if (ack.acknowledged() || !ack.retryable) {
+            if (ack.acknowledged()) {
                 impl_->collector->acknowledge(report.lease_token);
                 platform::global_metrics().usage_events_buffered.fetch_sub(
                     1, std::memory_order_relaxed);
-                if (!ack.acknowledged()) {
-                    platform::global_metrics().usage_report_failures.fetch_add(
-                        1, std::memory_order_relaxed);
-                    LOG_WARN("Discarded terminal usage report: lease={} error={}",
-                             report.lease_token, ack.error_code);
-                }
+                continue;
+            }
+            if (!ack.retryable) {
+                impl_->collector->dead_letter(report.lease_token, ack.error_code);
+                platform::global_metrics().usage_events_buffered.fetch_sub(
+                    1, std::memory_order_relaxed);
+                platform::global_metrics().usage_report_failures.fetch_add(
+                    1, std::memory_order_relaxed);
+                LOG_WARN("Dead-lettered non-retryable usage report: lease={} error={}",
+                         report.lease_token, ack.error_code);
                 continue;
             }
             platform::global_metrics().usage_report_failures.fetch_add(
@@ -100,6 +104,33 @@ void UsageReporter::run_loop() {
             // A retryable result belongs to this lease only. Do not let an
             // unrelated transient or reconciliation-needed lease block every
             // later usage event in the durable outbox.
+            continue;
+        }
+
+        auto evidence_events = impl_->collector->peek_evidence();
+        for (auto& ev : evidence_events) {
+            auto stage = ev.stage == "output_started"
+                ? dispatch::LeaseEvidenceStage::OutputStarted
+                : dispatch::LeaseEvidenceStage::Forwarded;
+            auto ack = impl_->dispatch->record_lease_evidence(
+                ev.lease_token, stage, ev.detail);
+            if (ack.acknowledged()) {
+                impl_->collector->acknowledge_evidence(ev.lease_token, ev.stage);
+                continue;
+            }
+            if (!ack.retryable) {
+                impl_->collector->dead_letter_evidence(
+                    ev.lease_token, ev.stage, ack.error_code);
+                platform::global_metrics().usage_report_failures.fetch_add(
+                    1, std::memory_order_relaxed);
+                LOG_WARN("Dead-lettered non-retryable evidence: lease={} stage={} error={}",
+                         ev.lease_token, ev.stage, ack.error_code);
+                continue;
+            }
+            platform::global_metrics().usage_report_failures.fetch_add(
+                1, std::memory_order_relaxed);
+            LOG_WARN("Evidence retained for retry: lease={} stage={} error={}",
+                     ev.lease_token, ev.stage, ack.error_code);
             continue;
         }
     }

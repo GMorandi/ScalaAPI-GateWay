@@ -137,6 +137,20 @@ UsageCollector::UsageCollector(std::string database_path)
     add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN response_status_code INTEGER NOT NULL DEFAULT 0");
     add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN response_content_type TEXT NOT NULL DEFAULT ''");
     add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN response_body TEXT NOT NULL DEFAULT ''");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN dead_lettered_at INTEGER");
+    add_column_if_missing(impl_->db, "ALTER TABLE usage_outbox ADD COLUMN dead_letter_error TEXT NOT NULL DEFAULT ''");
+    execute(impl_->db, R"SQL(
+        CREATE TABLE IF NOT EXISTS evidence_outbox (
+            lease_token TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'gateway',
+            detail TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+            acknowledged_at INTEGER,
+            dead_letter_error TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (lease_token, stage)
+        )
+    )SQL");
 }
 
 UsageCollector::~UsageCollector() {
@@ -231,7 +245,9 @@ std::vector<UsageEvent> UsageCollector::peek(size_t limit) {
                service_tier, upstream_endpoint, cancellation_reason,
                media_operation_id, pricing_version, response_status_code,
                response_content_type, response_body
-        FROM usage_outbox ORDER BY created_at, rowid LIMIT ?
+        FROM usage_outbox
+        WHERE dead_lettered_at IS NULL
+        ORDER BY created_at, rowid LIMIT ?
     )SQL";
     sqlite3_stmt* statement = nullptr;
     if (sqlite3_prepare_v2(impl_->db, sql, -1, &statement, nullptr) != SQLITE_OK)
@@ -301,6 +317,142 @@ void UsageCollector::acknowledge(const std::string& lease_token) {
         throw std::runtime_error(sqlite3_errmsg(impl_->db));
 }
 
+void UsageCollector::dead_letter(const std::string& lease_token,
+                                 const std::string& error_code) {
+    if (!impl_->db) {
+        if (!impl_->memory.empty() && impl_->memory.front().lease_token == lease_token)
+            impl_->memory.pop_front();
+        return;
+    }
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(impl_->db,
+            "UPDATE usage_outbox SET dead_lettered_at = unixepoch(), dead_letter_error = ? "
+            "WHERE lease_token = ? AND dead_lettered_at IS NULL",
+            -1, &statement, nullptr) != SQLITE_OK)
+        throw std::runtime_error(sqlite3_errmsg(impl_->db));
+    sqlite3_bind_text(statement, 1, error_code.c_str(),
+        static_cast<int>(error_code.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 2, lease_token.c_str(),
+        static_cast<int>(lease_token.size()), SQLITE_TRANSIENT);
+    auto result = sqlite3_step(statement);
+    sqlite3_finalize(statement);
+    if (result != SQLITE_DONE)
+        throw std::runtime_error(sqlite3_errmsg(impl_->db));
+}
+
+size_t UsageCollector::dead_lettered() const {
+    if (!impl_->db) return 0;
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(impl_->db,
+            "SELECT COUNT(*) FROM usage_outbox WHERE dead_lettered_at IS NOT NULL",
+            -1, &statement, nullptr) != SQLITE_OK)
+        return 0;
+    size_t count = sqlite3_step(statement) == SQLITE_ROW
+        ? static_cast<size_t>(sqlite3_column_int64(statement, 0)) : 0;
+    sqlite3_finalize(statement);
+    return count;
+}
+
+void UsageCollector::record_evidence(std::string lease_token, std::string stage,
+                                     std::string source, std::string detail) {
+    if (!impl_->db) return;
+    sqlite3_stmt* statement = nullptr;
+    constexpr const char* sql =
+        "INSERT INTO evidence_outbox (lease_token, stage, source, detail) "
+        "VALUES (?,?,?,?) ON CONFLICT(lease_token, stage) DO NOTHING";
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &statement, nullptr) != SQLITE_OK)
+        throw std::runtime_error(sqlite3_errmsg(impl_->db));
+    sqlite3_bind_text(statement, 1, lease_token.c_str(),
+        static_cast<int>(lease_token.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 2, stage.c_str(),
+        static_cast<int>(stage.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 3, source.c_str(),
+        static_cast<int>(source.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 4, detail.c_str(),
+        static_cast<int>(detail.size()), SQLITE_TRANSIENT);
+    auto result = sqlite3_step(statement);
+    sqlite3_finalize(statement);
+    if (result != SQLITE_DONE)
+        throw std::runtime_error(sqlite3_errmsg(impl_->db));
+}
+
+std::vector<UsageCollector::Evidence> UsageCollector::peek_evidence(size_t limit) {
+    std::vector<Evidence> results;
+    if (!impl_->db) return results;
+    sqlite3_stmt* statement = nullptr;
+    constexpr const char* sql =
+        "SELECT lease_token, stage, source, detail FROM evidence_outbox "
+        "WHERE acknowledged_at IS NULL ORDER BY created_at, rowid LIMIT ?";
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &statement, nullptr) != SQLITE_OK)
+        return results;
+    sqlite3_bind_int(statement, 1, static_cast<int>(limit));
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+        Evidence ev;
+        ev.lease_token = text_column(statement, 0);
+        ev.stage = text_column(statement, 1);
+        ev.source = text_column(statement, 2);
+        ev.detail = text_column(statement, 3);
+        results.push_back(std::move(ev));
+    }
+    sqlite3_finalize(statement);
+    return results;
+}
+
+void UsageCollector::acknowledge_evidence(const std::string& lease_token,
+                                          const std::string& stage) {
+    if (!impl_->db) return;
+    sqlite3_stmt* statement = nullptr;
+    constexpr const char* sql =
+        "UPDATE evidence_outbox SET acknowledged_at = unixepoch() "
+        "WHERE lease_token = ? AND stage = ? AND acknowledged_at IS NULL";
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &statement, nullptr) != SQLITE_OK)
+        throw std::runtime_error(sqlite3_errmsg(impl_->db));
+    sqlite3_bind_text(statement, 1, lease_token.c_str(),
+        static_cast<int>(lease_token.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 2, stage.c_str(),
+        static_cast<int>(stage.size()), SQLITE_TRANSIENT);
+    auto result = sqlite3_step(statement);
+    sqlite3_finalize(statement);
+    if (result != SQLITE_DONE)
+        throw std::runtime_error(sqlite3_errmsg(impl_->db));
+}
+
+void UsageCollector::dead_letter_evidence(const std::string& lease_token,
+                                          const std::string& stage,
+                                          const std::string& error_code) {
+    if (!impl_->db) return;
+    sqlite3_stmt* statement = nullptr;
+    constexpr const char* sql =
+        "UPDATE evidence_outbox SET acknowledged_at = unixepoch(), "
+        "dead_letter_error = ? WHERE lease_token = ? AND stage = ? "
+        "AND acknowledged_at IS NULL";
+    if (sqlite3_prepare_v2(impl_->db, sql, -1, &statement, nullptr) != SQLITE_OK)
+        throw std::runtime_error(sqlite3_errmsg(impl_->db));
+    sqlite3_bind_text(statement, 1, error_code.c_str(),
+        static_cast<int>(error_code.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 2, lease_token.c_str(),
+        static_cast<int>(lease_token.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(statement, 3, stage.c_str(),
+        static_cast<int>(stage.size()), SQLITE_TRANSIENT);
+    auto result = sqlite3_step(statement);
+    sqlite3_finalize(statement);
+    if (result != SQLITE_DONE)
+        throw std::runtime_error(sqlite3_errmsg(impl_->db));
+}
+
+size_t UsageCollector::pending_evidence() const {
+    if (!impl_->db) return 0;
+    sqlite3_stmt* statement = nullptr;
+    if (sqlite3_prepare_v2(impl_->db,
+            "SELECT COUNT(*) FROM evidence_outbox WHERE acknowledged_at IS NULL",
+            -1, &statement, nullptr) != SQLITE_OK)
+        return 0;
+    size_t count = sqlite3_step(statement) == SQLITE_ROW
+        ? static_cast<size_t>(sqlite3_column_int64(statement, 0)) : 0;
+    sqlite3_finalize(statement);
+    return count;
+}
+
 std::vector<UsageEvent> UsageCollector::drain() {
     if (!impl_->db) {
         std::vector<UsageEvent> events;
@@ -320,7 +472,8 @@ size_t UsageCollector::pending() const {
     if (!impl_->db) return impl_->memory.size();
     sqlite3_stmt* statement = nullptr;
     if (sqlite3_prepare_v2(impl_->db,
-            "SELECT COUNT(*) FROM usage_outbox", -1, &statement, nullptr) != SQLITE_OK)
+            "SELECT COUNT(*) FROM usage_outbox WHERE dead_lettered_at IS NULL",
+            -1, &statement, nullptr) != SQLITE_OK)
         return 0;
     size_t count = sqlite3_step(statement) == SQLITE_ROW
         ? static_cast<size_t>(sqlite3_column_int64(statement, 0)) : 0;

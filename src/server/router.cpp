@@ -101,6 +101,12 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
             "# HELP gateway_usage_outbox_backlog Pending durable usage events\n"
             "# TYPE gateway_usage_outbox_backlog gauge\n"
             "gateway_usage_outbox_backlog {}\n"
+            "# HELP gateway_usage_dead_lettered Non-retryable usage events retained for operator review\n"
+            "# TYPE gateway_usage_dead_lettered gauge\n"
+            "gateway_usage_dead_lettered {}\n"
+            "# HELP gateway_evidence_outbox_backlog Pending durable lease evidence\n"
+            "# TYPE gateway_evidence_outbox_backlog gauge\n"
+            "gateway_evidence_outbox_backlog {}\n"
             "# HELP gateway_usage_report_failures_total Failed usage report attempts\n"
             "# TYPE gateway_usage_report_failures_total counter\n"
             "gateway_usage_report_failures_total {}\n"
@@ -112,6 +118,8 @@ int Router::handle_request(const HttpRequest& req, HttpResponse& resp) {
             m.garnet_hits.load(), m.garnet_misses.load(),
             m.upstream_errors.load(), m.conversion_failures.load(), m.failovers.load(),
             m.active_connections.load(), m.usage_events_buffered.load(),
+            impl_->collector->dead_lettered(),
+            impl_->collector->pending_evidence(),
             m.usage_report_failures.load(), m.dispatch_reconnects.load());
         return 0;
     }

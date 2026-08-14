@@ -54,9 +54,26 @@ public:
     void record(UsageEvent event);
     std::vector<UsageEvent> peek(size_t limit = 100);
     void acknowledge(const std::string& lease_token);
+    void dead_letter(const std::string& lease_token, const std::string& error_code);
     std::vector<UsageEvent> drain();
     size_t pending() const;
+    size_t dead_lettered() const;
     bool durable() const;
+
+    struct Evidence {
+        std::string lease_token;
+        std::string stage;
+        std::string source;
+        std::string detail;
+    };
+
+    void record_evidence(std::string lease_token, std::string stage,
+                         std::string source, std::string detail);
+    std::vector<Evidence> peek_evidence(size_t limit = 100);
+    void acknowledge_evidence(const std::string& lease_token, const std::string& stage);
+    void dead_letter_evidence(const std::string& lease_token, const std::string& stage,
+                              const std::string& error_code);
+    size_t pending_evidence() const;
 
 private:
     struct Impl;
