@@ -1115,6 +1115,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                     LOG_WARN("Output evidence RPC failed, retained for retry: request={} lease={} error={}",
                              request_id, dispatch_result.lease_token, ack.error_code);
                 }
+                platform::FaultInjection::crash_if_configured(
+                    "gateway.after_output_started", request_id);
             },
             .client_disconnected = req.client_disconnected,
         };
@@ -1139,6 +1141,8 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
                 : forward_result.policy_failed_closed ? "response_content_policy_fail_closed"
                 : forward_result.client_disconnect ? "client_disconnect"
                 : "incomplete_provider_stream";
+            platform::FaultInjection::crash_if_configured(
+                "gateway.during_cancellation", request_id);
             auto abort_ack = dispatch_.abort(
                 dispatch_result.lease_token,
                 stream_abort_reason,
