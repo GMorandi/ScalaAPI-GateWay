@@ -534,7 +534,8 @@ CapnpDispatchClient::BlobUploadResult CapnpDispatchClient::upload_blob(
         builder.setIndex(index);
         auto data_builder = builder.initData(chunk_size);
         if (chunk_size > 0)
-            std::memcpy(data_builder.begin(), body.data() + offset, chunk_size);
+            std::copy(body.data() + offset, body.data() + offset + chunk_size,
+                      data_builder.begin());
         builder.setIsLast(is_last);
 
         auto words = capnp::messageToFlatArray(msg);
