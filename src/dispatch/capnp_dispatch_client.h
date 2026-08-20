@@ -48,6 +48,10 @@ struct DispatchRequest {
     std::string request_fingerprint;
     std::string request_query;
     std::string request_body;
+    std::string request_body_ref;
+    std::string request_body_digest;
+    uint64_t request_body_size = 0;
+    bool request_body_truncated = false;
 };
 
 struct MediaOperationRequest {
@@ -216,6 +220,7 @@ enum class LeaseEvidenceStage {
 enum class LeaseAbortDisposition {
     NoCharge,
     Unknown,
+    Safe,
 };
 
 struct ErrorReportData {
@@ -245,6 +250,16 @@ public:
         const std::string& lease_token, const std::string& content,
         const std::string& capability);
     bool is_connected();
+
+    struct BlobUploadResult {
+        bool accepted = false;
+        std::string error_code;
+        std::string blob_id;
+        std::string digest;
+        uint64_t total_bytes = 0;
+    };
+    BlobUploadResult upload_blob(const std::string& blob_id,
+                                 const std::string& body);
 
 private:
     struct Impl;

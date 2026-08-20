@@ -8,6 +8,7 @@
 
 #include <photon/thread/thread.h>
 #include <xxhash.h>
+#include <random>
 
 #include <chrono>
 #include <format>
@@ -436,11 +437,38 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
     std::atomic<bool> done{false};
     std::atomic<bool> client_disconnected{false};
     std::atomic<int> frames{1};
+    std::atomic<int64_t> session_bytes{static_cast<int64_t>(first.size())};
     std::atomic<int> input_tokens{0};
     std::atomic<int> output_tokens{0};
     std::atomic<int> cache_tokens{0};
     std::atomic<int> reasoning_tokens{0};
     std::atomic<bool> output_evidence_recorded{false};
+    std::atomic<bool> session_cap_exceeded{false};
+
+    static const int64_t kMaxSessionBytes = [] {
+        const char* env = std::getenv("SCALAPI_MAX_SESSION_BYTES");
+        return env ? std::atoll(env) : (int64_t)(512LL * 1024 * 1024);
+    }();
+    static const int kMaxSessionFrames = [] {
+        const char* env = std::getenv("SCALAPI_MAX_SESSION_FRAMES");
+        return env ? std::atoi(env) : 65536;
+    }();
+    static const int kMaxSessionDurationSec = [] {
+        const char* env = std::getenv("SCALAPI_MAX_SESSION_DURATION_SEC");
+        return env ? std::atoi(env) : 1800;
+    }();
+
+    auto check_session_caps = [&](int64_t new_bytes) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - now).count();
+        if (session_bytes.fetch_add(new_bytes, std::memory_order_relaxed) + new_bytes > kMaxSessionBytes
+            || frames.load(std::memory_order_relaxed) > kMaxSessionFrames
+            || elapsed > (int64_t)kMaxSessionDurationSec * 1000) {
+            session_cap_exceeded.store(true, std::memory_order_relaxed);
+            done.store(true, std::memory_order_relaxed);
+        }
+    };
+
     auto upstream_thread = photon::thread_enable_join(photon::thread_create11([&] {
         std::string buffer(kMaxFrame, '\0');
         while (!done.load(std::memory_order_relaxed)) {
@@ -448,6 +476,8 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
             auto n = upstream->recv_frame(buffer.data(), buffer.size(), &opcode, 30'000'000);
             if (n <= 0 || opcode == WebSocketOpcode::Close) break;
             ++frames;
+            check_session_caps(static_cast<int64_t>(n));
+            if (done.load(std::memory_order_relaxed)) break;
             ssize_t sent = -1;
             if (opcode == WebSocketOpcode::Binary)
                 sent = client.send_binary(buffer.data(), static_cast<size_t>(n));
@@ -486,6 +516,8 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
         }
         if (n == 0) break;
         ++frames;
+        check_session_caps(static_cast<int64_t>(n));
+        if (done.load(std::memory_order_relaxed)) break;
         if (opcode == WebSocketOpcode::Binary) upstream->send_binary(buffer.data(), static_cast<size_t>(n));
         else if (opcode == WebSocketOpcode::Text) upstream->send_text(std::string_view(buffer.data(), static_cast<size_t>(n)));
     }
@@ -495,6 +527,13 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - now).count();
     const bool disconnected = client_disconnected.load(std::memory_order_relaxed);
+    const bool cap_exceeded = session_cap_exceeded.load(std::memory_order_relaxed);
+    if (cap_exceeded) {
+        dispatch_.abort(dispatched.lease_token, "realtime_session_cap_exceeded",
+            dispatch::LeaseAbortDisposition::Safe);
+    }
+    std::string disconnect_reason = cap_exceeded ? "session_cap_exceeded"
+        : disconnected ? "client_disconnect" : "normal";
     collector_.record(usage::UsageEvent{
         .lease_token = dispatched.lease_token, .request_id = request_id,
         .api_key_id = dispatched.api_key_id, .user_id = target.user_id,
@@ -505,7 +544,7 @@ int GatewayHandler::bridge_realtime(const HttpRequest& req,
         .duration_ms = static_cast<int>(duration), .stream = true,
         .client_disconnect = disconnected, .status_code = 101,
         .realtime_duration_ms = static_cast<int>(duration), .realtime_frames = frames.load(),
-        .disconnect_reason = disconnected ? "client_disconnect" : "normal",
+        .disconnect_reason = disconnect_reason,
         .reasoning_tokens = reasoning_tokens.load(),
         .upstream_endpoint = target.upstream_path,
         .pricing_version = "v1",
@@ -846,6 +885,33 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         key_hash, parsed.metadata_user_id, req.body, parsed.model);
 
     // --- Step 5+6+7: Dispatch, forward, and failover loop ---
+    static constexpr size_t kMaxInlineRequestBodyBytes = 512 * 1024;
+    std::string inline_body;
+    std::string body_ref;
+    std::string body_digest;
+    uint64_t body_size = 0;
+    bool body_truncated = false;
+
+    if (req.body.size() > kMaxInlineRequestBodyBytes) {
+        thread_local std::mt19937_64 rng{std::random_device{}()};
+        auto blob_id = std::format("{:016x}{:016x}", rng(), rng());
+        auto upload = dispatch_.upload_blob(blob_id, std::string(req.body));
+        if (upload.accepted) {
+            body_ref = upload.blob_id;
+            body_digest = upload.digest;
+            body_size = upload.total_bytes;
+        } else {
+            resp.status_code = 503;
+            resp.body = error_json("provider_unavailable",
+                "Platform blob upload failed: " + upload.error_code);
+            metrics.requests_failed.fetch_add(1, std::memory_order_relaxed);
+            metrics.active_connections.fetch_sub(1, std::memory_order_relaxed);
+            return 0;
+        }
+    } else {
+        inline_body = std::string(req.body);
+    }
+
     dispatch::DispatchRequest dispatch_req{
         .api_key_hash = key_hash,
         .requested_model = parsed.model,
@@ -868,7 +934,11 @@ int GatewayHandler::handle(const HttpRequest& req, HttpResponse& resp,
         .force_platform = std::string(matched.force_platform),
         .request_fingerprint = request_fingerprint,
         .request_query = std::string(req.query),
-        .request_body = std::string(req.body),
+        .request_body = std::move(inline_body),
+        .request_body_ref = std::move(body_ref),
+        .request_body_digest = std::move(body_digest),
+        .request_body_size = body_size,
+        .request_body_truncated = body_truncated,
     };
 
     forwarder::FailoverController failover;

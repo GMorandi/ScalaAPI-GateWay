@@ -10,6 +10,7 @@ interface GatewayDispatch {
   mediaOperation @4 (request: MediaOperationRequest) -> (response: MediaOperationResponse);
   recordLeaseEvidence @5 (evidence: LeaseEvidence) -> (ack: WriteAck);
   evaluateContent @6 (request: ContentPolicyRequest) -> (response: ContentPolicyResponse);
+  uploadBlob @7 (chunk: BlobChunk) -> (ack: BlobChunkAck);
 }
 
 struct WriteAck {
@@ -44,6 +45,10 @@ struct DispatchRequest {
   requestFingerprint @20 :Text;
   requestQuery @21 :Text;
   requestBody @22 :Text;
+  requestBodyRef @23 :Text;
+  requestBodyDigest @24 :Text;
+  requestBodySize @25 :UInt64;
+  requestBodyTruncated @26 :Bool;
 
   enum EndpointKind {
     messages @0;
@@ -123,6 +128,7 @@ struct AbortRequest {
   enum Disposition {
     noCharge @0;
     unknown @1;
+    safe @2;
   }
 }
 
@@ -188,4 +194,20 @@ struct MediaOperationResponse {
   contentType @9 :Text;
   errorCode @10 :Text;
   errorMessage @11 :Text;
+}
+
+struct BlobChunk {
+  blobId @0 :Text;
+  seq @1 :UInt32;
+  index @2 :UInt32;
+  data @3 :List(UInt8);
+  isLast @4 :Bool;
+}
+
+struct BlobChunkAck {
+  accepted @0 :Bool;
+  errorCode @1 :Text;
+  blobId @2 :Text;
+  digest @3 :Text;
+  totalBytes @4 :UInt64;
 }

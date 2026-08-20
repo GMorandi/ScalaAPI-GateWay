@@ -27,6 +27,7 @@ enum class Method : uint8_t {
     MediaOperation = 5,
     RecordLeaseEvidence = 6,
     EvaluateContent = 7,
+    UploadBlob = 8,
 };
 
 struct CapnpDispatchClient::Impl {
@@ -193,6 +194,10 @@ DispatchResult CapnpDispatchClient::dispatch(const DispatchRequest& req) {
     builder.setForcePlatform(req.force_platform);
     builder.setRequestQuery(req.request_query);
     builder.setRequestBody(req.request_body);
+    builder.setRequestBodyRef(req.request_body_ref);
+    builder.setRequestBodyDigest(req.request_body_digest);
+    builder.setRequestBodySize(req.request_body_size);
+    builder.setRequestBodyTruncated(req.request_body_truncated);
 
     auto excluded = builder.initExcludedAccounts(req.excluded_accounts.size());
     for (size_t i = 0; i < req.excluded_accounts.size(); ++i) {
@@ -442,8 +447,12 @@ RpcAck CapnpDispatchClient::abort(const std::string& lease_token,
     auto builder = msg.initRoot<::AbortRequest>();
     builder.setLeaseToken(lease_token);
     builder.setReason(reason);
-    builder.setDisposition(disposition == LeaseAbortDisposition::Unknown
-        ? ::AbortRequest::Disposition::UNKNOWN : ::AbortRequest::Disposition::NO_CHARGE);
+    builder.setDisposition(
+        disposition == LeaseAbortDisposition::Unknown
+            ? ::AbortRequest::Disposition::UNKNOWN
+        : disposition == LeaseAbortDisposition::Safe
+            ? static_cast<::AbortRequest::Disposition>(2)
+            : ::AbortRequest::Disposition::NO_CHARGE);
     builder.setProviderStatusCode(provider_status_code);
 
     auto words = capnp::messageToFlatArray(msg);
@@ -502,6 +511,54 @@ ContentPolicyResult CapnpDispatchClient::evaluate_response_content(
 bool CapnpDispatchClient::is_connected() {
     std::lock_guard<photon::mutex> guard(impl_->mutex);
     return impl_->ensure_connected();
+}
+
+static constexpr size_t kBlobChunkBytes = 512 * 1024;
+
+CapnpDispatchClient::BlobUploadResult CapnpDispatchClient::upload_blob(
+    const std::string& blob_id, const std::string& body) {
+    BlobUploadResult result;
+    result.blob_id = blob_id;
+    std::lock_guard<photon::mutex> guard(impl_->mutex);
+
+    size_t offset = 0;
+    uint32_t index = 0;
+    while (offset < body.size() || index == 0) {
+        auto chunk_size = std::min(kBlobChunkBytes, body.size() - offset);
+        bool is_last = (offset + chunk_size >= body.size());
+
+        capnp::MallocMessageBuilder msg;
+        auto builder = msg.initRoot<::BlobChunk>();
+        builder.setBlobId(blob_id);
+        builder.setSeq(0);
+        builder.setIndex(index);
+        auto data_builder = builder.initData(chunk_size);
+        if (chunk_size > 0)
+            std::memcpy(data_builder.begin(), body.data() + offset, chunk_size);
+        builder.setIsLast(is_last);
+
+        auto words = capnp::messageToFlatArray(msg);
+        auto response = impl_->exchange(Method::UploadBlob, words);
+        if (response.size() <= 1 || response[0] != 0x88
+            || (response.size() - 1) % sizeof(capnp::word) != 0) {
+            result.error_code = "platform_unavailable";
+            return result;
+        }
+        std::vector<capnp::word> aligned((response.size() - 1) / sizeof(capnp::word));
+        std::memcpy(aligned.data(), response.data() + 1, response.size() - 1);
+        capnp::FlatArrayMessageReader reader(kj::arrayPtr(aligned.data(), aligned.size()));
+        auto ack = reader.getRoot<::BlobChunkAck>();
+        if (!ack.getAccepted()) {
+            result.error_code = ack.getErrorCode();
+            return result;
+        }
+        result.digest = ack.getDigest();
+        result.total_bytes = ack.getTotalBytes();
+        offset += chunk_size;
+        ++index;
+    }
+    result.accepted = true;
+    return result;
 }
 
 }  // namespace gateway::dispatch
