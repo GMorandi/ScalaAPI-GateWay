@@ -533,9 +533,9 @@ CapnpDispatchClient::BlobUploadResult CapnpDispatchClient::upload_blob(
         builder.setSeq(0);
         builder.setIndex(index);
         auto data_builder = builder.initData(chunk_size);
-        if (chunk_size > 0)
-            std::copy(body.data() + offset, body.data() + offset + chunk_size,
-                      data_builder.begin());
+        for (size_t i = 0; i < chunk_size; ++i)
+            data_builder.set(static_cast<uint>(i),
+                             static_cast<unsigned char>(body[offset + i]));
         builder.setIsLast(is_last);
 
         auto words = capnp::messageToFlatArray(msg);
