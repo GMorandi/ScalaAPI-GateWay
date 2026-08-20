@@ -1,5 +1,10 @@
 # ScalaAPI Gateway(网关)
 
+> **本仓库已迁移。** 开发继续在
+> [ScalaAPI-Platform](https://github.com/GMorandi/ScalaAPI-Platform) 仓库的
+> `gateway/` 目录进行,通过保留完整历史的 subtree 合并导入(导入提交
+> `8af79f0`;最终同步点为本仓库 master `3349d64`)。本仓库已归档,只读。
+
 [English](README.md) | **简体中文**
 
 ScalaAPI 平台的高性能 LLM API 边缘网关。基于 C++20 与

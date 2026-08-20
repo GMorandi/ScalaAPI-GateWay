@@ -1,5 +1,11 @@
 # ScalaAPI Gateway
 
+> **This repository has moved.** Development continues in
+> [ScalaAPI-Platform](https://github.com/GMorandi/ScalaAPI-Platform) under
+> `gateway/`, imported via a history-preserving subtree merge (import commit
+> `8af79f0`; final synchronized source: master `3349d64` of this repository).
+> This repository is archived and read-only.
+
 **English** | [简体中文](README.zh-CN.md)
 
 High-performance LLM API edge gateway for the ScalaAPI platform. Built in C++20
